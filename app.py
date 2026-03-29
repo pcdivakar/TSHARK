@@ -186,12 +186,106 @@ def main():
         st.info("👈 Upload a PCAP file to start")
         if DEBUG:
             with st.expander("ℹ️ Debug Info – How to verify your PCAP locally"):
-                st.markdown("""
-                **Run these commands on your PCAP:**
-                ```bash
-                # Show all protocols
-                tshark -r your.pcap -T fields -e frame.protocols | sort | uniq -c | sort -rn | head -20
-                # Check for OT protocols
-                tshark -r your.pcap -Y "s7comm or modbus or dnp3 or cip or bacnet"
-                # Show used TCP ports
-                tshark -r your.pcap -T fields -e tcp.port | sort | uniq -c | sort -rn
+                st.markdown(
+                    "**Run these commands on your PCAP:**\n\n"
+                    "```bash\n"
+                    "# Show all protocols\n"
+                    "tshark -r your.pcap -T fields -e frame.protocols | sort | uniq -c | sort -rn | head -20\n"
+                    "# Check for OT protocols\n"
+                    "tshark -r your.pcap -Y \"s7comm or modbus or dnp3 or cip or bacnet\"\n"
+                    "# Show used TCP ports\n"
+                    "tshark -r your.pcap -T fields -e tcp.port | sort | uniq -c | sort -rn\n"
+                    "```\n"
+                )
+        return
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pcap") as tmp:
+        tmp.write(uploaded.getbuffer())
+        pcap_path = tmp.name
+
+    st.info(f"📡 Analyzing {uploaded.name}...")
+    ip_data = extract_assets(pcap_path)
+
+    if DEBUG:
+        st.subheader("🔍 Debug Output")
+        st.write(f"**Unique IPs with OT activity:** {len(ip_data)}")
+        for ip, d in ip_data.items():
+            st.write(f"- {ip}: {', '.join(d['protocols'])} (packets: {d['packet_count']})")
+
+    # Build asset list
+    assets = []
+    for ip, data in ip_data.items():
+        if not data["protocols"]:
+            continue
+        assets.append({
+            "ip_address": ip,
+            "asset_type": data["protocols"][0],
+            "vendor": get_vendor(data["metadata"]),
+            "model": get_model(data["metadata"]),
+            "protocols": ", ".join(data["protocols"]),
+            "metadata": str(data["metadata"])[:200],
+            "packet_count": data["packet_count"]
+        })
+
+    conv = get_conversations(pcap_path)
+    G = nx.Graph()
+    for a in assets:
+        G.add_node(a["ip_address"])
+    ip_set = {a["ip_address"] for a in assets}
+    for (src, dst), cnt in conv.items():
+        if src in ip_set and dst in ip_set:
+            G.add_edge(src, dst, weight=cnt)
+
+    tab1, tab2 = st.tabs(["📋 Asset Inventory", "🗺️ Network Topology"])
+
+    with tab1:
+        if assets:
+            df = pd.DataFrame(assets)
+            st.dataframe(df, use_container_width=True)
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button("⬇️ Download CSV", csv, "ot_assets.csv", "text/csv")
+            st.metric("Total Assets", len(assets))
+            st.metric("Communication Links", G.number_of_edges())
+        else:
+            st.error("❌ **No OT assets detected!**")
+            st.markdown(
+                "### Possible reasons:\n"
+                "1. **Non‑standard ports** – Your OT traffic uses custom ports. Run locally:\n"
+                "   ```bash\n"
+                "   tshark -r your_file.pcap -T fields -e tcp.port | sort | uniq -c | sort -rn\n"
+                "   ```\n"
+                "   Then add decode‑as for those ports.\n"
+                "2. **Encrypted traffic** – Some OT protocols (OPC UA, some S7) may be encrypted.\n"
+                "3. **Incomplete PCAP** – The capture may miss initial handshake packets.\n\n"
+                "### Quick verification:\n"
+                "```bash\n"
+                "tshark -r your_file.pcap -T fields -e frame.protocols | sort | uniq -c | sort -rn | head -20\n"
+                "```\n"
+            )
+
+    with tab2:
+        if G.number_of_nodes() > 0:
+            st.success(f"✅ Found {G.number_of_nodes()} assets and {G.number_of_edges()} connections")
+            try:
+                import matplotlib.pyplot as plt
+                fig, ax = plt.subplots(figsize=(10, 8))
+                pos = nx.spring_layout(G, k=2, iterations=50)
+                nx.draw(G, pos, with_labels=True, node_color='lightblue',
+                        edge_color='gray', node_size=500, font_size=8, ax=ax)
+                st.pyplot(fig)
+            except ImportError:
+                st.warning("Install matplotlib and plotly for richer graphs: `pip install matplotlib plotly`")
+                st.write("**Basic node/edge list:**")
+                st.write(f"Nodes: {list(G.nodes())}")
+                st.write(f"Edges: {list(G.edges())}")
+        else:
+            st.info("No network connections found between detected assets.")
+
+    os.unlink(pcap_path)
+
+if __name__ == "__main__":
+    try:
+        subprocess.run(["tshark", "--version"], capture_output=True, check=True)
+        main()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        st.error("❌ tshark not found. Ensure `packages.txt` contains 'tshark' and redeploy.")
