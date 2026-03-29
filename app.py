@@ -1,9 +1,8 @@
 """
-OT Asset Discovery - Complete Version
-- Detects OT protocols using tshark (with fallback decode-as)
-- Shows detailed debug info
-- Provides actionable guidance when no assets found
-- Displays asset inventory table and network graph
+OT Asset Discovery – Robust Detection
+- Uses port, protocol string, and decode‑as methods
+- Allows user to add custom decode‑as ports
+- Provides fallback asset extraction when metadata is missing
 """
 
 import streamlit as st
@@ -19,29 +18,25 @@ st.set_page_config(page_title="OT Asset Discovery", layout="wide")
 st.title("🏭 OT Asset Discovery & Network Topology")
 
 # =============================================================================
-# DEBUG MODE
+# CONFIGURATION
 # =============================================================================
-DEBUG = True
+DEBUG = True   # Set to False to hide detailed tshark commands
 
-# =============================================================================
-# OT PORT MAPPINGS & PROTOCOL DETECTORS
-# =============================================================================
-OT_PORTS = {
-    102: "s7comm", 502: "modbus", 20000: "dnp3", 44818: "cip",
-    2222: "cip", 47808: "bacnet", 2404: "iec104", 34964: "profinet", 4840: "opcua"
+# Standard OT ports (well‑known)
+KNOWN_OT_PORTS = {
+    102: "S7comm", 502: "Modbus", 20000: "DNP3", 44818: "EtherNet/IP",
+    2222: "EtherNet/IP", 47808: "BACnet", 2404: "IEC104", 34964: "PROFINET",
+    4840: "OPC UA", 9600: "Omron FINS", 5000: "Mitsubishi", 5001: "Mitsubishi",
+    5002: "Mitsubishi", 5006: "Mitsubishi", 5007: "Mitsubishi", 5500: "Mitsubishi"
 }
 
-PROTOCOL_DETECTORS = [
-    {"filter": "s7comm", "name": "Siemens S7comm", "fields": ["ip.src", "s7comm.cpu_type", "s7comm.module_type"]},
-    {"filter": "modbus", "name": "Modbus/TCP", "fields": ["ip.src", "modbus.unit_id"]},
-    {"filter": "dnp3", "name": "DNP3", "fields": ["ip.src", "dnp3.src"]},
-    {"filter": "cip", "name": "EtherNet/IP (CIP)", "fields": ["ip.src", "cip.vendor_id", "cip.product_name"]},
-    {"filter": "bacnet", "name": "BACnet", "fields": ["ip.src", "bacnet.object_name"]},
-    {"filter": "pn_dcp", "name": "PROFINET DCP", "fields": ["pn_dcp.station_name", "pn_dcp.ip_address"]},
-    {"filter": "iec104", "name": "IEC 60870-5-104", "fields": ["ip.src"]},
-    {"filter": "opcua", "name": "OPC UA", "fields": ["ip.src"]},
-    {"filter": "profinet", "name": "PROFINET IO", "fields": ["ip.src"]},
-    {"filter": "lldp", "name": "LLDP", "fields": ["lldp.system_name"]},
+# Common non‑standard ports to try decode‑as
+DECODE_AS_PORTS = [5000, 5001, 5002, 5006, 5007, 5500, 6000, 9600, 10000, 20000, 34964]
+
+# OT keywords for frame.protocols detection
+OT_KEYWORDS = [
+    's7comm', 'modbus', 'dnp3', 'cip', 'bacnet', 'profinet', 'iec104', 'opcua',
+    'pn_dcp', 'etherip', 'enip', 'mms', 'goose', 'sv', 'fins', 'melsec', 'hart'
 ]
 
 # =============================================================================
@@ -69,51 +64,95 @@ def run_tshark(pcap_path, display_filter, fields, decode_as=None):
     except Exception as e:
         return [], str(e)
 
-def detect_ot_traffic(pcap_path):
-    detected = {}
-    # frame.protocols method
-    cmd = ["tshark", "-r", pcap_path, "-T", "fields", "-e", "frame.protocols"]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    ot_keywords = ['s7comm', 'modbus', 'dnp3', 'cip', 'bacnet', 'profinet', 'iec104', 'opcua', 'pn_dcp']
-    for line in result.stdout.split('\n'):
-        line_lower = line.lower()
-        for kw in ot_keywords:
-            if kw in line_lower:
-                detected[kw] = detected.get(kw, 0) + 1
-    # port method
-    port_cmd = ["tshark", "-r", pcap_path, "-T", "fields", "-e", "tcp.port", "-e", "udp.port"]
-    port_result = subprocess.run(port_cmd, capture_output=True, text=True, check=False)
-    for line in port_result.stdout.split('\n'):
-        for port_str in line.split():
-            try:
-                port = int(port_str)
-                if port in OT_PORTS:
-                    detected[OT_PORTS[port]] = detected.get(OT_PORTS[port], 0) + 1
-            except ValueError:
-                pass
-    return detected
+def detect_ot_ips_by_ports(pcap_path):
+    """Return set of IPs that communicate over known OT ports."""
+    ot_ips = set()
+    for port, proto in KNOWN_OT_PORTS.items():
+        cmd = ["tshark", "-r", pcap_path, f"-Y", f"tcp.port=={port} or udp.port=={port}",
+               "-T", "fields", "-e", "ip.src", "-e", "ip.dst"]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            for line in result.stdout.split('\n'):
+                for ip in line.split():
+                    if re.match(r'^\d+\.\d+\.\d+\.\d+$', ip):
+                        ot_ips.add(ip)
+        except:
+            pass
+    return ot_ips
 
-def extract_assets(pcap_path):
-    ip_data = defaultdict(lambda: {"protocols": [], "metadata": {}, "packet_count": 0})
-    with st.spinner("Detecting OT protocols..."):
-        detected_protos = detect_ot_traffic(pcap_path)
+def detect_ot_ips_by_protocol_string(pcap_path):
+    """Return set of IPs where frame.protocols contains OT keywords."""
+    ot_ips = set()
+    cmd = ["tshark", "-r", pcap_path, "-T", "fields", "-e", "ip.src", "-e", "frame.protocols"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        for line in result.stdout.split('\n'):
+            if not line.strip():
+                continue
+            parts = line.split('\t')
+            if len(parts) >= 2:
+                ip = parts[0]
+                protocols = parts[1].lower()
+                if any(kw in protocols for kw in OT_KEYWORDS):
+                    ot_ips.add(ip)
+    except:
+        pass
+    return ot_ips
+
+def extract_assets_with_robust_methods(pcap_path, custom_decode_ports=None):
+    """Combine multiple detection methods and extract metadata."""
+    ip_data = defaultdict(lambda: {
+        "protocols": set(),
+        "metadata": {},
+        "packet_count": 0
+    })
+
+    # 1. Get candidate OT IPs from port and protocol string detection
+    with st.spinner("Identifying OT IPs using port and protocol analysis..."):
+        port_ips = detect_ot_ips_by_ports(pcap_path)
+        proto_ips = detect_ot_ips_by_protocol_string(pcap_path)
+        candidate_ips = port_ips.union(proto_ips)
+
     if DEBUG:
-        st.write("📊 **Detected protocols in PCAP:**")
-        for proto, cnt in detected_protos.items():
-            st.write(f"- {proto}: {cnt} packets")
+        st.write(f"**Candidate OT IPs found:** {len(candidate_ips)}")
+        st.write(f"  - via ports: {len(port_ips)}")
+        st.write(f"  - via protocol strings: {len(proto_ips)}")
+
+    if not candidate_ips:
+        return ip_data
+
+    # 2. For each candidate IP, try to extract protocol and metadata
+    # We'll use a set of protocol detectors (same as before)
+    protocol_detectors = [
+        {"filter": "s7comm", "name": "Siemens S7comm", "fields": ["ip.src", "s7comm.cpu_type", "s7comm.module_type"]},
+        {"filter": "modbus", "name": "Modbus/TCP", "fields": ["ip.src", "modbus.unit_id"]},
+        {"filter": "dnp3", "name": "DNP3", "fields": ["ip.src", "dnp3.src"]},
+        {"filter": "cip", "name": "EtherNet/IP (CIP)", "fields": ["ip.src", "cip.vendor_id", "cip.product_name"]},
+        {"filter": "bacnet", "name": "BACnet", "fields": ["ip.src", "bacnet.object_name"]},
+        {"filter": "pn_dcp", "name": "PROFINET DCP", "fields": ["pn_dcp.station_name", "pn_dcp.ip_address"]},
+        {"filter": "iec104", "name": "IEC 60870-5-104", "fields": ["ip.src"]},
+        {"filter": "opcua", "name": "OPC UA", "fields": ["ip.src"]},
+        {"filter": "profinet", "name": "PROFINET IO", "fields": ["ip.src"]},
+        {"filter": "lldp", "name": "LLDP", "fields": ["lldp.system_name"]},
+    ]
+
     progress_bar = st.progress(0)
-    for idx, det in enumerate(PROTOCOL_DETECTORS):
-        progress_bar.progress((idx+1)/len(PROTOCOL_DETECTORS), f"Trying {det['name']}...")
+    total_detectors = len(protocol_detectors)
+    for idx, det in enumerate(protocol_detectors):
+        progress_bar.progress((idx+1)/total_detectors, f"Trying {det['name']}...")
+        # Try without decode-as
         lines, _ = run_tshark(pcap_path, det["filter"], det["fields"])
-        if not lines and det["name"].lower() in detected_protos:
-            if DEBUG:
-                st.info(f"{det['name']} detected but filter returned nothing – trying decode-as on common ports")
-            for port in [5000, 5001, 5002, 6000, 10000, 20000]:
+        # If no lines, try decode-as on candidate ports
+        if not lines:
+            ports_to_try = DECODE_AS_PORTS
+            if custom_decode_ports:
+                ports_to_try.extend(custom_decode_ports)
+            for port in ports_to_try:
                 decode_str = f"tcp.port=={port},{det['filter']}"
                 lines, _ = run_tshark(pcap_path, det["filter"], det["fields"], decode_str)
                 if lines:
                     if DEBUG:
-                        st.success(f"Success with decode-as: {decode_str}")
+                        st.success(f"Decode-as worked for {det['name']} on port {port}")
                     break
         for line in lines:
             parts = line.split('\t')
@@ -122,14 +161,21 @@ def extract_assets(pcap_path):
                 if re.match(r'^\d+\.\d+\.\d+\.\d+$', p):
                     ip = p
                     break
-            if not ip:
+            if not ip or ip not in candidate_ips:
                 continue
-            ip_data[ip]["protocols"].append(det["name"])
+            ip_data[ip]["protocols"].add(det["name"])
             ip_data[ip]["packet_count"] += 1
             for i, field in enumerate(det["fields"]):
                 if i < len(parts) and parts[i] and field != "ip.src":
                     ip_data[ip]["metadata"][field.replace(".", "_")] = parts[i]
     progress_bar.empty()
+
+    # For any candidate IP that still has no protocol, add a generic entry
+    for ip in candidate_ips:
+        if not ip_data[ip]["protocols"]:
+            ip_data[ip]["protocols"].add("OT Device (detected by port/protocol string)")
+            ip_data[ip]["packet_count"] = 1
+
     return ip_data
 
 def get_vendor(metadata):
@@ -185,7 +231,7 @@ def main():
     if not uploaded:
         st.info("👈 Upload a PCAP file to start")
         if DEBUG:
-            with st.expander("ℹ️ Debug Info – How to verify your PCAP locally"):
+            with st.expander("ℹ️ How to verify your PCAP locally"):
                 st.markdown(
                     "**Run these commands on your PCAP:**\n\n"
                     "```bash\n"
@@ -204,11 +250,24 @@ def main():
         pcap_path = tmp.name
 
     st.info(f"📡 Analyzing {uploaded.name}...")
-    ip_data = extract_assets(pcap_path)
+
+    # Optional: user input for additional custom decode-as ports
+    custom_ports_input = st.text_input(
+        "Optional: additional TCP ports to decode as OT protocols (comma separated)",
+        placeholder="e.g., 5500,6000,10000"
+    )
+    custom_ports = []
+    if custom_ports_input:
+        try:
+            custom_ports = [int(p.strip()) for p in custom_ports_input.split(",") if p.strip().isdigit()]
+        except:
+            st.warning("Invalid port list, ignoring.")
+
+    ip_data = extract_assets_with_robust_methods(pcap_path, custom_ports)
 
     if DEBUG:
         st.subheader("🔍 Debug Output")
-        st.write(f"**Unique IPs with OT activity:** {len(ip_data)}")
+        st.write(f"**Unique OT IPs found:** {len(ip_data)}")
         for ip, d in ip_data.items():
             st.write(f"- {ip}: {', '.join(d['protocols'])} (packets: {d['packet_count']})")
 
@@ -219,7 +278,7 @@ def main():
             continue
         assets.append({
             "ip_address": ip,
-            "asset_type": data["protocols"][0],
+            "asset_type": next(iter(data["protocols"])) if data["protocols"] else "Unknown",
             "vendor": get_vendor(data["metadata"]),
             "model": get_model(data["metadata"]),
             "protocols": ", ".join(data["protocols"]),
@@ -250,11 +309,7 @@ def main():
             st.error("❌ **No OT assets detected!**")
             st.markdown(
                 "### Possible reasons:\n"
-                "1. **Non‑standard ports** – Your OT traffic uses custom ports. Run locally:\n"
-                "   ```bash\n"
-                "   tshark -r your_file.pcap -T fields -e tcp.port | sort | uniq -c | sort -rn\n"
-                "   ```\n"
-                "   Then add decode‑as for those ports.\n"
+                "1. **Non‑standard ports** – Your OT traffic uses custom ports. Enter them above.\n"
                 "2. **Encrypted traffic** – Some OT protocols (OPC UA, some S7) may be encrypted.\n"
                 "3. **Incomplete PCAP** – The capture may miss initial handshake packets.\n\n"
                 "### Quick verification:\n"
@@ -274,7 +329,7 @@ def main():
                         edge_color='gray', node_size=500, font_size=8, ax=ax)
                 st.pyplot(fig)
             except ImportError:
-                st.warning("Install matplotlib and plotly for richer graphs: `pip install matplotlib plotly`")
+                st.warning("Install matplotlib for graphs: `pip install matplotlib`")
                 st.write("**Basic node/edge list:**")
                 st.write(f"Nodes: {list(G.nodes())}")
                 st.write(f"Edges: {list(G.edges())}")
