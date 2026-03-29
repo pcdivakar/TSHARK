@@ -1,9 +1,10 @@
 """
-OT & IT Asset Discovery – Deloitte Theme | Professional Network Map
+OT & IT Asset Discovery – Deloitte Black & Green Theme
 - Exhaustive asset identification (OT + IT) using tshark
 - MAC OUI vendor lookup
-- Interactive vis-network topology (draggable, zoomable, full-screen)
+- Professional vis-network topology (draggable, zoomable, full-screen)
 - Tabs at the top (Asset Inventory / Network Map)
+- Fully optimised for dark background readability
 """
 
 import streamlit as st
@@ -14,27 +15,31 @@ import re
 import pandas as pd
 import json
 from collections import defaultdict
-from datetime import datetime
 
 # =============================================================================
-# PAGE CONFIG & THEME
+# PAGE CONFIG & DELOITTE DARK THEME (BLACK + GREEN)
 # =============================================================================
 st.set_page_config(page_title="Deloitte OT/IT Asset Discovery", layout="wide", page_icon="🔒")
 
-# Custom CSS for Deloitte dark theme (black & green)
+# Custom CSS for complete Deloitte black & green theme
 st.markdown("""
 <style>
-    /* Main background */
+    /* Global background */
     .stApp {
-        background-color: #0a0a0a;
+        background-color: #0a0a0a !important;
+    }
+    /* All text */
+    body, p, div, span, label, .stText, .stMarkdown, .stAlert, .stException {
+        color: #e0e0e0 !important;
     }
     /* Headers */
-    h1, h2, h3, h4, h5, h6 {
+    h1, h2, h3, h4, h5, h6, .stHeader {
         color: #00ff9d !important;
+        font-weight: 600 !important;
     }
     /* Sidebar */
-    .css-1d391kg {
-        background-color: #000000;
+    .css-1d391kg, .stSidebar {
+        background-color: #000000 !important;
     }
     /* Tabs */
     .stTabs [data-baseweb="tab-list"] {
@@ -45,7 +50,7 @@ st.markdown("""
     }
     .stTabs [data-baseweb="tab"] {
         background-color: transparent;
-        color: #00ff9d;
+        color: #e0e0e0 !important;
         font-weight: bold;
         font-size: 16px;
         border-radius: 8px;
@@ -56,30 +61,112 @@ st.markdown("""
         color: #000000 !important;
     }
     /* Dataframe */
-    .dataframe {
-        background-color: #1e1e1e;
-        color: #ffffff;
+    .dataframe, .stDataFrame {
+        background-color: #1e1e1e !important;
+        color: #e0e0e0 !important;
+        border-collapse: collapse;
+        width: 100%;
     }
-    /* Metrics */
+    .dataframe th, .stDataFrame th {
+        background-color: #2a2a2a !important;
+        color: #00ff9d !important;
+        border: 1px solid #333;
+        padding: 8px;
+    }
+    .dataframe td, .stDataFrame td {
+        border: 1px solid #333;
+        padding: 8px;
+        color: #e0e0e0;
+    }
+    /* Metric boxes */
     .stMetric {
-        background-color: #1a1a1a;
+        background-color: #1a1a1a !important;
         border-radius: 8px;
         padding: 10px;
         border-left: 4px solid #00ff9d;
     }
-    /* Success/Warning/Info boxes */
+    .stMetric label, .stMetric .stMetricLabel {
+        color: #00ff9d !important;
+    }
+    .stMetric .stMetricValue {
+        color: #ffffff !important;
+        font-size: 28px !important;
+        font-weight: bold;
+    }
+    /* Expander */
+    .streamlit-expanderHeader {
+        background-color: #1a1a1a !important;
+        color: #00ff9d !important;
+        border-radius: 8px;
+    }
+    .streamlit-expanderContent {
+        background-color: #0a0a0a !important;
+        color: #e0e0e0;
+    }
+    /* Info / Success / Warning boxes */
     .stAlert {
         background-color: #1a1a1a !important;
+        border-left: 4px solid #00ff9d !important;
+        color: #e0e0e0 !important;
+    }
+    .stAlert .stMarkdown {
+        color: #e0e0e0 !important;
+    }
+    /* Buttons */
+    .stButton button {
+        background-color: #00ff9d !important;
+        color: #000000 !important;
+        border: none;
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-weight: bold;
+    }
+    .stButton button:hover {
+        background-color: #00cc7a !important;
+        color: #000000;
+    }
+    /* File uploader */
+    .stFileUploader {
+        background-color: #1a1a1a !important;
+        border: 1px dashed #00ff9d !important;
+        border-radius: 8px;
+    }
+    /* Code blocks */
+    code, pre {
+        background-color: #1e1e1e !important;
+        color: #00ff9d !important;
+        border-radius: 6px;
+    }
+    /* Text input */
+    .stTextInput input {
+        background-color: #1e1e1e !important;
+        color: #e0e0e0 !important;
+        border: 1px solid #00ff9d !important;
+        border-radius: 8px;
+    }
+    /* Success message */
+    .stSuccess {
+        background-color: #0a2a1a !important;
         border-left-color: #00ff9d !important;
+    }
+    /* Error message */
+    .stError {
+        background-color: #2a1a1a !important;
+        border-left-color: #ff5555 !important;
+    }
+    /* Info message */
+    .stInfo {
+        background-color: #1a2a3a !important;
+        border-left-color: #3498db !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Optional: Add a logo (place a file named "deloitte_logo.png" in the repo)
+# Optional logo (place a file named "deloitte_logo.png" in the repo)
 try:
     st.image("deloitte_logo.png", width=150)
 except:
-    pass  # No logo, continue
+    pass
 
 st.title("🔒 Deloitte OT & IT Asset Discovery")
 st.markdown("*Professional network mapping for industrial control systems*")
@@ -87,9 +174,8 @@ st.markdown("*Professional network mapping for industrial control systems*")
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-DEBUG = False  # Set to True to see tshark commands
+DEBUG = False
 
-# Known OT ports (standard)
 KNOWN_OT_PORTS = {
     102: "S7comm", 502: "Modbus", 20000: "DNP3", 44818: "EtherNet/IP",
     2222: "EtherNet/IP", 47808: "BACnet", 2404: "IEC104", 34964: "PROFINET",
@@ -97,7 +183,6 @@ KNOWN_OT_PORTS = {
     5002: "Mitsubishi", 5006: "Mitsubishi", 5007: "Mitsubishi", 5500: "Mitsubishi"
 }
 
-# Known IT ports
 KNOWN_IT_PORTS = {
     80: "HTTP", 443: "HTTPS", 53: "DNS", 67: "DHCP", 68: "DHCP",
     161: "SNMP", 162: "SNMP", 22: "SSH", 23: "Telnet", 21: "FTP",
@@ -105,7 +190,6 @@ KNOWN_IT_PORTS = {
     143: "IMAP", 3389: "RDP", 3306: "MySQL", 5432: "PostgreSQL"
 }
 
-# Protocol detectors (OT + IT)
 PROTOCOL_DETECTORS = [
     # OT
     {"filter": "s7comm", "name": "Siemens S7comm", "category": "OT", "fields": ["ip.src", "s7comm.cpu_type", "s7comm.module_type"]},
@@ -131,31 +215,17 @@ PROTOCOL_DETECTORS = [
     {"filter": "lldp", "name": "LLDP", "category": "IT", "fields": ["lldp.system_name", "lldp.system_description"]},
 ]
 
-# =============================================================================
-# MAC OUI DATABASE (static sample – expandable)
-# =============================================================================
+# MAC OUI database (sample)
 OUI_DB = {
-    "00:0C:29": "VMware",
-    "00:50:56": "VMware",
-    "00:1C:42": "Cisco",
-    "00:0F:FE": "Huawei",
-    "00:0F:9F": "Siemens",
-    "00:1B:21": "Rockwell Automation",
-    "00:0A:35": "Schneider Electric",
-    "00:0E:8F": "ABB",
-    "00:0D:4B": "Phoenix Contact",
-    "08:00:27": "Oracle VirtualBox",
-    "00:15:5D": "Microsoft Hyper-V",
-    "B8:27:EB": "Raspberry Pi",
-    "00:14:22": "Dell",
-    "00:1A:6B": "HP",
-    "00:16:3E": "Xensource",
-    "00:1E:37": "Mitsubishi Electric",
-    "00:0E:6B": "Omron",
-    "00:80:F4": "GE Fanuc",
-    "00:1F:45": "Beckhoff",
-    "00:30:48": "WAGO",
+    "00:0C:29": "VMware", "00:50:56": "VMware", "00:1C:42": "Cisco",
+    "00:0F:FE": "Huawei", "00:0F:9F": "Siemens", "00:1B:21": "Rockwell Automation",
+    "00:0A:35": "Schneider Electric", "00:0E:8F": "ABB", "00:0D:4B": "Phoenix Contact",
+    "08:00:27": "Oracle VirtualBox", "00:15:5D": "Microsoft Hyper-V", "B8:27:EB": "Raspberry Pi",
+    "00:14:22": "Dell", "00:1A:6B": "HP", "00:16:3E": "Xensource",
+    "00:1E:37": "Mitsubishi Electric", "00:0E:6B": "Omron", "00:80:F4": "GE Fanuc",
+    "00:1F:45": "Beckhoff", "00:30:48": "WAGO",
 }
+
 def get_vendor_from_mac(mac):
     if not mac or mac == "Unknown":
         return "Unknown"
@@ -166,7 +236,7 @@ def get_vendor_from_mac(mac):
     return "Unknown"
 
 # =============================================================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS (same as before, with minor improvements)
 # =============================================================================
 def run_tshark(pcap_path, display_filter, fields, decode_as=None):
     cmd = ["tshark", "-r", pcap_path]
@@ -181,8 +251,7 @@ def run_tshark(pcap_path, display_filter, fields, decode_as=None):
         cmd.append("-q")
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        lines = result.stdout.strip().splitlines() if result.stdout else []
-        return lines, None
+        return result.stdout.strip().splitlines() if result.stdout else [], None
     except Exception as e:
         return [], str(e)
 
@@ -223,7 +292,6 @@ def detect_ips_by_protocol_string(pcap_path):
     return ips
 
 def extract_macs(pcap_path):
-    """Extract MAC addresses for each IP from ARP and Ethernet headers."""
     ip_to_mac = {}
     # ARP
     cmd = ["tshark", "-r", pcap_path, "-Y", "arp", "-T", "fields", "-e", "arp.src.proto_ipv4", "-e", "arp.src.hw_mac"]
@@ -252,12 +320,8 @@ def extract_macs(pcap_path):
 
 def extract_assets(pcap_path, custom_decode_ports):
     ip_data = defaultdict(lambda: {
-        "protocols": set(),
-        "category": set(),
-        "metadata": {},
-        "packet_count": 0
+        "protocols": set(), "category": set(), "metadata": {}, "packet_count": 0
     })
-    # Candidate IPs
     ot_port_ips = detect_ips_by_ports(pcap_path, KNOWN_OT_PORTS)
     it_port_ips = detect_ips_by_ports(pcap_path, KNOWN_IT_PORTS)
     string_ips = detect_ips_by_protocol_string(pcap_path)
@@ -325,7 +389,6 @@ def get_conversations(pcap_path):
     return conv
 
 def generate_vis_network(nodes_data, edges_data):
-    """Create professional vis-network HTML."""
     html = f"""
     <!DOCTYPE html>
     <html>
@@ -360,7 +423,7 @@ def generate_vis_network(nodes_data, edges_data):
     <body>
         <div id="network"></div>
         <div class="controls">
-            🖱️ Drag nodes | 🔍 Scroll zoom | ⬜ Double‑click fullscreen | 🎨 Colors: OT=Red, IT=Blue, Unknown=Grey
+            🖱️ Drag nodes | 🔍 Scroll zoom | ⬜ Double‑click fullscreen | 🎨 OT=Red, IT=Blue, Unknown=Grey
         </div>
         <script>
             var nodes = new vis.DataSet({json.dumps(nodes_data)});
@@ -437,7 +500,6 @@ tshark -r your.pcap -T fields -e tcp.port | sort | uniq -c | sort -rn
 
     st.info(f"📡 Analyzing {uploaded.name}... This may take a moment.")
 
-    # Optional custom decode-as ports
     custom_ports_input = st.text_input(
         "Optional: additional TCP ports to decode as OT protocols (comma separated)",
         placeholder="e.g., 5500,6000,10000"
@@ -449,22 +511,17 @@ tshark -r your.pcap -T fields -e tcp.port | sort | uniq -c | sort -rn
         except:
             st.warning("Invalid port list, ignoring.")
 
-    # Extract assets and MACs
     ip_data = extract_assets(pcap_path, custom_ports)
     ip_to_mac = extract_macs(pcap_path)
 
-    # Build asset inventory
     assets = []
     for ip, data in ip_data.items():
         mac = ip_to_mac.get(ip, "Unknown")
         vendor_mac = get_vendor_from_mac(mac)
         vendor = vendor_mac if vendor_mac != "Unknown" else "Unknown"
-        # Try to get vendor from metadata if available
         if vendor == "Unknown" and "cip_vendor_id" in data["metadata"]:
             vendor_ids = {"002a": "Siemens", "001b": "Rockwell", "005a": "Schneider"}
             vendor = vendor_ids.get(data["metadata"]["cip_vendor_id"], "Unknown")
-        if vendor == "Unknown" and "vendor_id" in data["metadata"]:
-            vendor = data["metadata"]["vendor_id"]
         asset = {
             "IP Address": ip,
             "MAC Address": mac,
@@ -478,7 +535,6 @@ tshark -r your.pcap -T fields -e tcp.port | sort | uniq -c | sort -rn
         }
         assets.append(asset)
 
-    # Build conversation graph (ensure ALL connections)
     conversations = get_conversations(pcap_path)
     G = nx.Graph()
     for a in assets:
@@ -488,7 +544,6 @@ tshark -r your.pcap -T fields -e tcp.port | sort | uniq -c | sort -rn
         if src in ip_set and dst in ip_set:
             G.add_edge(src, dst, weight=cnt)
 
-    # Prepare data for vis-network
     nodes_vis = []
     for ip, data in ip_data.items():
         category = "OT" if "OT" in data["category"] else ("IT" if "IT" in data["category"] else "Unknown")
@@ -500,7 +555,6 @@ tshark -r your.pcap -T fields -e tcp.port | sort | uniq -c | sort -rn
         if src in ip_set and dst in ip_set:
             edges_vis.append({"from": src, "to": dst, "value": cnt, "title": f"Packets: {cnt}"})
 
-    # TABS AT THE TOP
     tab1, tab2 = st.tabs(["📋 Asset Inventory", "🗺️ Network Topology"])
 
     with tab1:
