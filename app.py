@@ -1,7 +1,7 @@
 """
 OT Asset Discovery & Network Architecture Mapping
 - Exhaustive asset classification (200+ types) using tshark deep inspection
-- Network topology extraction using plotcap API
+- Network topology extraction using tshark's built-in conversation stats
 - Interactive Plotly graph of communication flows
 """
 
@@ -15,7 +15,6 @@ import plotly.graph_objects as go
 import networkx as nx
 from collections import defaultdict
 from typing import Dict, List, Set, Tuple, Optional
-from plotcap.api import parse_file
 
 st.set_page_config(page_title="OT Asset Classifier + Network Map", layout="wide")
 st.title("🏭 OT Asset Discovery & Network Topology")
@@ -423,21 +422,51 @@ def classify_asset_type(ip: str, protocols: Set[str], metadata: Dict[str, str]) 
     return asset_type, confidence, additional_info
 
 # =============================================================================
-# 5. NETWORK MAPPING USING PLOTCAP API
+# 5. NETWORK MAPPING USING TSHARK CONVERSATION STATISTICS (NO PLOTCAP)
 # =============================================================================
 
 @st.cache_data(ttl=3600)
-def get_conversations_plotcap(pcap_path: str, layer: int = 3) -> Dict[Tuple[str, str], int]:
-    """Extract IP conversations using plotcap."""
+def get_conversations_tshark(pcap_path: str) -> Dict[Tuple[str, str], int]:
+    """
+    Extract IP conversations using tshark's built-in conversation statistics.
+    Returns dict: {(src_ip, dst_ip): packet_count}
+    """
+    conversations = {}
+    cmd = ["tshark", "-r", pcap_path, "-z", "conv,ip", "-q"]
     try:
-        convs = parse_file(pcap_file=pcap_path, layer=layer)
-        result = {}
-        for conv, count in convs.items():
-            result[(conv.src, conv.dst)] = count
-        return result
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        output = result.stdout
+        
+        lines = output.split('\n')
+        for line in lines:
+            if '<->' not in line:
+                continue
+            if 'Frames' in line or 'Bytes' in line:
+                continue
+            
+            parts = line.strip().split()
+            if len(parts) < 6:
+                continue
+            
+            try:
+                arrow_idx = parts.index('<->')
+                src = parts[arrow_idx - 1]
+                dst = parts[arrow_idx + 1]
+                
+                # Find total frames (usually the second last numeric field)
+                total_frames = 0
+                for p in reversed(parts):
+                    if p.isdigit():
+                        total_frames = int(p)
+                        break
+                if total_frames > 0:
+                    conversations[(src, dst)] = total_frames
+            except ValueError:
+                continue
     except Exception as e:
-        st.error(f"plotcap error: {e}")
-        return {}
+        st.warning(f"Error extracting conversations: {e}")
+    
+    return conversations
 
 def build_network_graph(conversations: Dict[Tuple[str, str], int],
                         ip_to_asset: Dict[str, str]) -> nx.Graph:
@@ -552,9 +581,9 @@ def main():
             "Additional Info": ", ".join(f"{k}:{v}" for k,v in info.items())
         })
 
-    # ---- Build network map using plotcap ----
+    # ---- Build network map using tshark conversation stats ----
     with st.spinner("Building network topology..."):
-        conversations = get_conversations_plotcap(pcap_path, layer=3)
+        conversations = get_conversations_tshark(pcap_path)
     ip_to_asset = {a["IP Address"]: a["Asset Type"] for a in assets}
     G = build_network_graph(conversations, ip_to_asset)
 
