@@ -282,3 +282,4 @@ def main():
                 
                 # Check TCP ports used (non-standard ports need decode-as)
                 tshark -r your_file.pcap -T fields -e tcp.port | sort | uniq -c | sort -rn
+"""
