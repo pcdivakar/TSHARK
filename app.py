@@ -422,7 +422,7 @@ def classify_asset_type(ip: str, protocols: Set[str], metadata: Dict[str, str]) 
     return asset_type, confidence, additional_info
 
 # =============================================================================
-# 5. NETWORK MAPPING USING TSHARK CONVERSATION STATISTICS (NO PLOTCAP)
+# 5. NETWORK MAPPING USING TSHARK CONVERSATION STATISTICS
 # =============================================================================
 
 @st.cache_data(ttl=3600)
