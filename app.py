@@ -14,6 +14,7 @@ import os
 import re
 import pandas as pd
 import json
+import networkx as nx          # <-- FIXED: added missing import
 from collections import defaultdict
 
 # =============================================================================
@@ -21,15 +22,16 @@ from collections import defaultdict
 # =============================================================================
 st.set_page_config(page_title="Deloitte OT/IT Asset Discovery", layout="wide", page_icon="🔒")
 
-# Custom CSS for complete Deloitte black & green theme
+# Custom CSS for complete Deloitte black & green theme (improved visibility)
 st.markdown("""
 <style>
     /* Global background */
     .stApp {
         background-color: #0a0a0a !important;
     }
-    /* All text */
-    body, p, div, span, label, .stText, .stMarkdown, .stAlert, .stException {
+    /* All text – ensure visibility */
+    body, p, div, span, label, .stText, .stMarkdown, .stAlert, .stException,
+    .stCodeBlock, code, pre, .stExpander, .stExpander p, .stExpander div {
         color: #e0e0e0 !important;
     }
     /* Headers */
@@ -41,7 +43,7 @@ st.markdown("""
     .css-1d391kg, .stSidebar {
         background-color: #000000 !important;
     }
-    /* Tabs */
+    /* Tabs at top */
     .stTabs [data-baseweb="tab-list"] {
         gap: 24px;
         background-color: #1a1a1a;
@@ -101,7 +103,7 @@ st.markdown("""
     }
     .streamlit-expanderContent {
         background-color: #0a0a0a !important;
-        color: #e0e0e0;
+        color: #e0e0e0 !important;
     }
     /* Info / Success / Warning boxes */
     .stAlert {
@@ -148,16 +150,23 @@ st.markdown("""
     .stSuccess {
         background-color: #0a2a1a !important;
         border-left-color: #00ff9d !important;
+        color: #e0e0e0 !important;
     }
     /* Error message */
     .stError {
         background-color: #2a1a1a !important;
         border-left-color: #ff5555 !important;
+        color: #e0e0e0 !important;
     }
     /* Info message */
     .stInfo {
         background-color: #1a2a3a !important;
         border-left-color: #3498db !important;
+        color: #e0e0e0 !important;
+    }
+    /* Captions and small text */
+    .stCaption, .stSmallText {
+        color: #a0a0a0 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -236,7 +245,7 @@ def get_vendor_from_mac(mac):
     return "Unknown"
 
 # =============================================================================
-# HELPER FUNCTIONS (same as before, with minor improvements)
+# HELPER FUNCTIONS
 # =============================================================================
 def run_tshark(pcap_path, display_filter, fields, decode_as=None):
     cmd = ["tshark", "-r", pcap_path]
@@ -536,6 +545,8 @@ tshark -r your.pcap -T fields -e tcp.port | sort | uniq -c | sort -rn
         assets.append(asset)
 
     conversations = get_conversations(pcap_path)
+    # Use networkx only if needed (for potential future use, but not required for vis-network)
+    # We'll keep it for consistency
     G = nx.Graph()
     for a in assets:
         G.add_node(a["IP Address"])
@@ -555,6 +566,7 @@ tshark -r your.pcap -T fields -e tcp.port | sort | uniq -c | sort -rn
         if src in ip_set and dst in ip_set:
             edges_vis.append({"from": src, "to": dst, "value": cnt, "title": f"Packets: {cnt}"})
 
+    # Tabs at the top
     tab1, tab2 = st.tabs(["📋 Asset Inventory", "🗺️ Network Topology"])
 
     with tab1:
