@@ -1,0 +1,37 @@
+
+---
+
+## 🚀 Deployment Instructions
+
+1. **Create a new GitHub repository** (e.g., `ot-pcap-analyzer`).
+2. **Add the five files above** to the root of the repository.
+3. **Push to GitHub**.
+4. **Go to [Streamlit Cloud](https://streamlit.io/cloud)** and sign in with GitHub.
+5. **Click "New app"**, select your repository, branch (usually `main`), and main file (`app.py`).
+6. **Click "Deploy"**.
+7. After a few minutes, your app will be live at `https://your-app-name.streamlit.app`.
+
+---
+
+## ✅ What This App Does
+
+- **Upload** a PCAP file (up to ~200MB on Streamlit Cloud; for larger files, run locally).
+- **Scans** for all protocols listed in the exhaustive reference (35+).
+- **Extracts** IP addresses, MAC addresses, hostnames, and protocol‑specific metadata (vendor, model, firmware, serial, etc.).
+- **Displays** a sortable table of assets with all discovered information.
+- **Provides** a download link for the asset list as CSV.
+- **Shows** protocol distribution bar chart.
+
+---
+
+## 🔧 Customization / Adding More Protocols
+
+To add a new protocol, simply extend the `PROTOCOLS` dictionary in `app.py` with:
+
+```python
+"my_protocol": {
+    "filter": "myproto",      # tshark display filter
+    "name": "My Protocol",
+    "fields": ["ip.src", "ip.dst", "myproto.field1"],
+    "asset": {"custom_attr": "myproto.field1"}
+}
