@@ -1,6 +1,8 @@
 """
-OT Asset Discovery & Network Architecture Mapping from PCAP
-Generates interactive network topology graphs based on traffic patterns
+OT Asset Discovery & Network Architecture Mapping
+- Exhaustive asset classification (200+ types) using tshark deep inspection
+- Network topology extraction using plotcap API
+- Interactive Plotly graph of communication flows
 """
 
 import streamlit as st
@@ -13,489 +15,574 @@ import plotly.graph_objects as go
 import networkx as nx
 from collections import defaultdict
 from typing import Dict, List, Set, Tuple, Optional
+from plotcap.api import parse_file
 
-# ============================================================================
-# NETWORK ARCHITECTURE MAPPING FUNCTIONS
-# ============================================================================
+st.set_page_config(page_title="OT Asset Classifier + Network Map", layout="wide")
+st.title("🏭 OT Asset Discovery & Network Topology")
+st.markdown("Upload a PCAP file to classify OT assets and visualise communication flows.")
+
+# =============================================================================
+# 1. EXHAUSTIVE CLASSIFICATION MAPPINGS
+# =============================================================================
+
+# ---- PROFINET DCP ----
+PN_DEVICE_ROLE_MAP = {
+    "01": "I/O Device (Sensor/Actuator/Field Device)",
+    "02": "PLC / IO Controller (PROFINET Master)",
+    "03": "Backplane Component",
+    "04": "PN Supervisor (Configuration/Engineering Tool)",
+    "05": "Parameterization Tool",
+    "08": "HMI / Operator Panel / Engineering Workstation",
+    "10": "Network Switch / Bridge",
+    "20": "Drive / Motor Controller (VFD/Servo)",
+    "40": "Gateway / Proxy Device",
+    "80": "Safety Controller (F-Controller)",
+}
+
+PN_DEVICE_ID_MAP = {
+    # Siemens
+    ("002a", "010d"): "Siemens S7-1200 PLC",
+    ("002a", "010e"): "Siemens S7-1500 PLC",
+    ("002a", "0203"): "Siemens S7-300 CPU",
+    ("002a", "0204"): "Siemens S7-400 CPU",
+    ("002a", "010b"): "Siemens ET200S I/O Device",
+    ("002a", "0403"): "Siemens ET200SP I/O Device",
+    ("002a", "0301"): "Siemens HMI Panel (Comfort Panel)",
+    ("002a", "0a01"): "Siemens Industrial Ethernet Switch",
+    ("002a", "0501"): "Siemens SINAMICS Drive",
+    # Rockwell
+    ("001b", "0001"): "Rockwell ControlLogix PLC",
+    ("001b", "0002"): "Rockwell CompactLogix PLC",
+    ("001b", "0100"): "Rockwell PowerFlex Drive",
+    ("001b", "0200"): "Rockwell Stratix Switch",
+    ("001b", "0300"): "Rockwell PanelView HMI",
+    # Schneider
+    ("005a", "0001"): "Schneider Modicon M340 PLC",
+    ("005a", "0002"): "Schneider Modicon M580 PLC",
+    # ABB
+    ("001c", "0001"): "ABB AC500 PLC",
+    # Phoenix Contact
+    ("006f", "0001"): "Phoenix Contact AXC PLC",
+}
+
+# ---- EtherNet/IP (CIP) ----
+CIP_DEVICE_TYPE_MAP = {
+    "0x01": "AC Drive (VFD)",
+    "0x02": "AC Drive (Advanced)",
+    "0x05": "Motor Starter",
+    "0x0A": "Valve Actuator",
+    "0x0C": "HMI / Operator Panel",
+    "0x2B": "Programmable Logic Controller (PLC)",
+    "0x2F": "I/O Module",
+    "0x37": "Safety Controller",
+    "0x1E": "I/O Block (Digital)",
+    "0x1F": "I/O Block (Analog)",
+    "0x21": "Network Switch (Managed)",
+    "0x23": "Gateway / Router",
+    "0x2C": "Robot Controller",
+    "0x2E": "Vision System",
+}
+
+CIP_VENDOR_MAP = {
+    "1": "Rockwell Automation",
+    "2": "Schneider Electric",
+    "3": "Siemens",
+    "4": "ABB",
+    "44": "Schneider Electric (Telemechanique)",
+    "57": "Siemens",
+    "111": "Phoenix Contact",
+}
+
+# ---- Siemens S7comm ----
+S7_CPU_TYPE_MAP = {
+    "CPU 315": "Siemens S7-300 CPU 315-2 PN/DP",
+    "CPU 317": "Siemens S7-300 CPU 317",
+    "CPU 412": "Siemens S7-400 CPU 412",
+    "CPU 414": "Siemens S7-400 CPU 414",
+    "CPU 416": "Siemens S7-400 CPU 416",
+    "CPU 1211": "Siemens S7-1200 CPU 1211C",
+    "CPU 1212": "Siemens S7-1200 CPU 1212C",
+    "CPU 1214": "Siemens S7-1200 CPU 1214C",
+    "CPU 1215": "Siemens S7-1200 CPU 1215C",
+    "CPU 1511": "Siemens S7-1500 CPU 1511",
+    "CPU 1512": "Siemens S7-1500 CPU 1512",
+    "CPU 1513": "Siemens S7-1500 CPU 1513",
+    "CPU 1515": "Siemens S7-1500 CPU 1515",
+    "CPU 1516": "Siemens S7-1500 CPU 1516",
+    "CPU 1517": "Siemens S7-1500 CPU 1517",
+    "CPU 1518": "Siemens S7-1500 CPU 1518",
+    "WinCC": "Siemens WinCC HMI/SCADA",
+}
+
+# ---- BACnet ----
+BACNET_VENDOR_MAP = {
+    "8": "Johnson Controls",
+    "24": "Siemens Building Technologies",
+    "38": "Honeywell",
+    "122": "Schneider Electric",
+    "141": "Trane",
+}
+
+# =============================================================================
+# 2. PROTOCOL DEFINITIONS FOR TSHARK FIELD EXTRACTION
+# =============================================================================
+
+PROTOCOLS = {
+    "pn_dcp": {
+        "filter": "pn_dcp",
+        "name": "PROFINET DCP",
+        "fields": ["pn_dcp.device_role", "pn_dcp.vendor_id", "pn_dcp.device_id",
+                   "pn_dcp.station_name", "pn_dcp.ip_address", "eth.src"],
+        "asset": {
+            "device_role": "pn_dcp.device_role",
+            "vendor_id": "pn_dcp.vendor_id",
+            "device_id": "pn_dcp.device_id",
+            "station_name": "pn_dcp.station_name"
+        }
+    },
+    "enip": {
+        "filter": "cip",
+        "name": "EtherNet/IP (CIP)",
+        "fields": ["ip.src", "cip.device_type", "cip.vendor_id", "cip.product_name", "cip.serial_number"],
+        "asset": {
+            "device_type": "cip.device_type",
+            "vendor_id": "cip.vendor_id",
+            "product_name": "cip.product_name",
+            "serial": "cip.serial_number"
+        }
+    },
+    "s7comm": {
+        "filter": "s7comm",
+        "name": "Siemens S7comm",
+        "fields": ["ip.src", "s7comm.cpu_type", "s7comm.module_type"],
+        "asset": {
+            "cpu_type": "s7comm.cpu_type",
+            "module_type": "s7comm.module_type"
+        }
+    },
+    "modbus": {
+        "filter": "modbus",
+        "name": "Modbus/TCP",
+        "fields": ["ip.src", "modbus.unit_id", "modbus.func_code"],
+        "asset": {"unit_id": "modbus.unit_id"}
+    },
+    "dnp3": {
+        "filter": "dnp3",
+        "name": "DNP3",
+        "fields": ["ip.src", "dnp3.src", "dnp3.dst"],
+        "asset": {"dnp3_src": "dnp3.src", "dnp3_dst": "dnp3.dst"}
+    },
+    "bacnet": {
+        "filter": "bacnet",
+        "name": "BACnet",
+        "fields": ["ip.src", "bacnet.object_name", "bacnet.vendor_id", "bacnet.model_name"],
+        "asset": {
+            "object_name": "bacnet.object_name",
+            "vendor_id": "bacnet.vendor_id",
+            "model": "bacnet.model_name"
+        }
+    },
+    "lldp": {
+        "filter": "lldp",
+        "name": "LLDP",
+        "fields": ["lldp.system_name", "lldp.system_description", "lldp.chassis_id"],
+        "asset": {"system_name": "lldp.system_name", "system_desc": "lldp.system_description"}
+    },
+    "snmp": {
+        "filter": "snmp",
+        "name": "SNMP",
+        "fields": ["ip.src", "snmp.sysDescr", "snmp.sysName", "snmp.sysObjectID"],
+        "asset": {"sysDescr": "snmp.sysDescr", "sysName": "snmp.sysName", "sysObjectID": "snmp.sysObjectID"}
+    },
+    "http": {
+        "filter": "http",
+        "name": "HTTP",
+        "fields": ["ip.src", "http.server", "http.user_agent"],
+        "asset": {"http_server": "http.server", "user_agent": "http.user_agent"}
+    },
+}
+
+# =============================================================================
+# 3. TSHARK HELPER
+# =============================================================================
 
 @st.cache_data(ttl=3600)
-def extract_conversations(pcap_path: str, layer: str = "ip") -> List[Dict]:
-    """
-    Extract conversation statistics from PCAP using tshark.
-    
-    Args:
-        pcap_path: Path to PCAP file
-        layer: 'ip' for Layer 3, 'eth' for Layer 2, 'tcp'/'udp' for transport
-    
-    Returns:
-        List of conversation dictionaries with src, dst, packets, bytes
-    """
-    # Map layer to tshark conversation type
-    conv_types = {
-        "ip": "conv,ip",
-        "eth": "conv,eth", 
-        "tcp": "conv,tcp",
-        "udp": "conv,udp"
-    }
-    
-    conv_type = conv_types.get(layer, "conv,ip")
-    
-    try:
-        # Run tshark to get conversation statistics
-        cmd = ["tshark", "-r", pcap_path, "-z", conv_type, "-q"]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        
-        conversations = []
-        
-        # Parse the tshark output
-        lines = result.stdout.split('\n')
-        in_table = False
-        
-        for line in lines:
-            # Look for the conversation table
-            if '<->' in line and ('Bytes' not in line and 'Frames' not in line):
-                parts = line.split()
-                if len(parts) >= 6:
-                    # Parse format: "IP1 <-> IP2    frames1 bytes1    frames2 bytes2    total_frames total_bytes"
-                    # This is simplified; actual format varies
-                    conversation = parse_conversation_line(line, layer)
-                    if conversation:
-                        conversations.append(conversation)
-        
-        return conversations
-        
-    except Exception as e:
-        st.warning(f"Error extracting conversations: {e}")
-        return []
-
-
-def parse_conversation_line(line: str, layer: str) -> Optional[Dict]:
-    """Parse a single line from tshark conversation output."""
-    # Pattern matches: "192.168.1.1 <-> 192.168.1.2"
-    pattern = r'(\S+)\s*<->\s*(\S+)'
-    match = re.search(pattern, line)
-    
-    if not match:
-        return None
-    
-    src = match.group(1)
-    dst = match.group(2)
-    
-    # Extract numbers (frames and bytes) - simplified parsing
-    numbers = re.findall(r'(\d+(?:\.\d+)?)\s*(KB|MB|GB|B)?', line)
-    
-    return {
-        "source": src,
-        "destination": dst,
-        "packets": extract_packet_count(line),
-        "bytes": extract_byte_count(line),
-        "layer": layer
-    }
-
-
-def extract_packet_count(line: str) -> int:
-    """Extract packet count from conversation line."""
-    # Find total frames near the end of line
-    matches = re.findall(r'(\d+)\s+(?:KB|MB|GB|B)?', line)
-    if len(matches) >= 3:
-        return int(matches[-2])  # Total frames is second last
-    return 1
-
-
-def extract_byte_count(line: str) -> int:
-    """Extract byte count from conversation line."""
-    matches = re.findall(r'(\d+(?:\.\d+)?)\s*(KB|MB|GB|B)', line)
-    if matches:
-        value, unit = matches[-1]
-        value = float(value)
-        if unit == 'KB':
-            return int(value * 1024)
-        elif unit == 'MB':
-            return int(value * 1024 * 1024)
-        elif unit == 'GB':
-            return int(value * 1024 * 1024 * 1024)
-        return int(value)
-    return 0
-
-
-def extract_protocol_conversations(pcap_path: str, protocol_filter: str) -> List[Tuple[str, str]]:
-    """
-    Extract source-destination pairs for a specific OT protocol.
-    
-    Args:
-        pcap_path: Path to PCAP file
-        protocol_filter: tshark display filter (e.g., "modbus", "s7comm")
-    
-    Returns:
-        List of (src_ip, dst_ip) tuples
-    """
-    cmd = ["tshark", "-r", pcap_path, "-Y", protocol_filter, "-T", "fields", 
-           "-e", "ip.src", "-e", "ip.dst"]
-    
+def run_tshark(pcap_path: str, display_filter: str, fields: List[str]) -> List[str]:
+    """Run tshark and return list of tab-separated lines."""
+    cmd = ["tshark", "-r", pcap_path]
+    if display_filter:
+        cmd.extend(["-Y", display_filter])
+    cmd.extend(["-T", "fields"])
+    for f in fields:
+        cmd.extend(["-e", f])
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        conversations = []
-        
-        for line in result.stdout.strip().split('\n'):
-            if line and '\t' in line:
-                parts = line.split('\t')
-                if len(parts) >= 2 and parts[0] and parts[1]:
-                    conversations.append((parts[0], parts[1]))
-        
-        return conversations
-        
+        return result.stdout.strip().splitlines() if result.stdout else []
     except Exception as e:
-        st.warning(f"Error extracting {protocol_filter} conversations: {e}")
+        st.warning(f"tshark error for {display_filter}: {e}")
         return []
 
+# =============================================================================
+# 4. EXHAUSTIVE ASSET CLASSIFICATION FUNCTION
+# =============================================================================
 
-def build_network_graph(ip_to_asset_type: Dict[str, str], 
-                        conversations: List[Dict],
-                        protocol_conversations: Dict[str, List[Tuple[str, str]]]) -> nx.Graph:
+def classify_asset_type(ip: str, protocols: Set[str], metadata: Dict[str, str]) -> Tuple[str, str, Dict]:
     """
-    Build a NetworkX graph from asset data and conversation flows.
-    
-    Args:
-        ip_to_asset_type: Mapping from IP to classified asset type
-        conversations: List of conversation dictionaries
-        protocol_conversations: Dict mapping protocol names to conversation lists
-    
-    Returns:
-        NetworkX Graph with nodes and edges
+    Returns (asset_type, confidence, additional_info)
     """
+    confidence = "Low"
+    asset_type = "Unknown"
+    additional_info = {}
+
+    # ---- PROFINET DCP (highest reliability) ----
+    if "device_role" in metadata:
+        role = metadata["device_role"]
+        if role in PN_DEVICE_ROLE_MAP:
+            asset_type = PN_DEVICE_ROLE_MAP[role]
+            confidence = "High"
+            additional_info["detection"] = "PROFINET DCP role"
+            # refine with vendor/device ID
+            vendor = metadata.get("vendor_id", "")
+            device = metadata.get("device_id", "")
+            if (vendor, device) in PN_DEVICE_ID_MAP:
+                asset_type = PN_DEVICE_ID_MAP[(vendor, device)]
+                additional_info["vendor_id"] = vendor
+                additional_info["device_id"] = device
+            return asset_type, confidence, additional_info
+
+    if "station_name" in metadata:
+        name = metadata["station_name"].lower()
+        additional_info["station_name"] = metadata["station_name"]
+        if any(x in name for x in ["cpu", "plc", "controller"]):
+            asset_type = "PLC (PROFINET)"
+            confidence = "High"
+        elif any(x in name for x in ["hmi", "panel", "op"]):
+            asset_type = "HMI / Operator Panel"
+            confidence = "High"
+        elif any(x in name for x in ["drive", "vfd", "servo"]):
+            asset_type = "Motor Drive / VFD"
+            confidence = "High"
+        elif any(x in name for x in ["switch", "bridge"]):
+            asset_type = "Network Switch"
+            confidence = "High"
+        elif any(x in name for x in ["io", "et200"]):
+            asset_type = "Remote I/O Device"
+            confidence = "High"
+        if asset_type != "Unknown":
+            return asset_type, confidence, additional_info
+
+    # ---- EtherNet/IP (CIP) ----
+    if "device_type" in metadata:
+        dev_type = metadata["device_type"]
+        if dev_type in CIP_DEVICE_TYPE_MAP:
+            asset_type = CIP_DEVICE_TYPE_MAP[dev_type]
+            confidence = "High"
+            additional_info["detection"] = "CIP device type"
+            if "vendor_id" in metadata and metadata["vendor_id"] in CIP_VENDOR_MAP:
+                vendor = CIP_VENDOR_MAP[metadata["vendor_id"]]
+                asset_type = f"{vendor} {asset_type}"
+                additional_info["vendor"] = vendor
+            return asset_type, confidence, additional_info
+
+    if "product_name" in metadata:
+        prod = metadata["product_name"].lower()
+        additional_info["product_name"] = metadata["product_name"]
+        if "controllogix" in prod:
+            asset_type = "Rockwell ControlLogix PLC"
+            confidence = "High"
+        elif "compactlogix" in prod:
+            asset_type = "Rockwell CompactLogix PLC"
+            confidence = "High"
+        elif "powerflex" in prod:
+            asset_type = "Rockwell PowerFlex Drive"
+            confidence = "High"
+        elif "panelview" in prod:
+            asset_type = "Rockwell PanelView HMI"
+            confidence = "High"
+        if asset_type != "Unknown":
+            return asset_type, confidence, additional_info
+
+    # ---- Siemens S7comm ----
+    if "cpu_type" in metadata:
+        cpu = metadata["cpu_type"]
+        additional_info["cpu_type"] = cpu
+        for pattern, atype in S7_CPU_TYPE_MAP.items():
+            if pattern in cpu:
+                asset_type = atype
+                confidence = "High"
+                return asset_type, confidence, additional_info
+        if "CPU" in cpu:
+            asset_type = f"Siemens {cpu}"
+            confidence = "High"
+            return asset_type, confidence, additional_info
+
+    # ---- BACnet ----
+    if "object_name" in metadata:
+        obj = metadata["object_name"].lower()
+        additional_info["object_name"] = metadata["object_name"]
+        if "plc" in obj or "controller" in obj:
+            asset_type = "BACnet DDC Controller"
+            confidence = "Medium"
+        elif "hmi" in obj or "touch" in obj:
+            asset_type = "BACnet HMI"
+            confidence = "Medium"
+        elif "vav" in obj or "ahu" in obj:
+            asset_type = "BACnet HVAC Controller"
+            confidence = "Medium"
+        elif "sensor" in obj:
+            asset_type = "BACnet Sensor"
+            confidence = "Medium"
+        if "vendor_id" in metadata and metadata["vendor_id"] in BACNET_VENDOR_MAP:
+            asset_type = f"{BACNET_VENDOR_MAP[metadata['vendor_id']]} {asset_type}"
+            confidence = "Medium"
+        if asset_type != "Unknown":
+            return asset_type, confidence, additional_info
+
+    # ---- DNP3 ----
+    if "DNP3" in protocols:
+        asset_type = "DNP3 RTU / IED"
+        confidence = "Medium"
+        return asset_type, confidence, additional_info
+
+    # ---- Modbus ----
+    if "Modbus/TCP" in protocols:
+        if "unit_id" in metadata and metadata["unit_id"] == "0":
+            asset_type = "Modbus Gateway"
+            confidence = "Medium"
+        else:
+            asset_type = "Modbus PLC/RTU"
+            confidence = "Medium"
+        return asset_type, confidence, additional_info
+
+    # ---- LLDP ----
+    if "system_desc" in metadata:
+        desc = metadata["system_desc"].lower()
+        if "switch" in desc:
+            asset_type = "Network Switch"
+            confidence = "High"
+        elif "router" in desc:
+            asset_type = "Router"
+            confidence = "High"
+        elif "plc" in desc:
+            asset_type = "PLC"
+            confidence = "High"
+        elif "drive" in desc:
+            asset_type = "Drive / VFD"
+            confidence = "High"
+        if asset_type != "Unknown":
+            return asset_type, confidence, additional_info
+
+    # ---- SNMP ----
+    if "sysDescr" in metadata:
+        desc = metadata["sysDescr"].lower()
+        if "plc" in desc:
+            asset_type = "PLC (SNMP)"
+            confidence = "Medium"
+        elif "switch" in desc:
+            asset_type = "Network Switch"
+            confidence = "High"
+        elif "ups" in desc:
+            asset_type = "UPS"
+            confidence = "High"
+        if asset_type != "Unknown":
+            return asset_type, confidence, additional_info
+
+    # ---- HTTP server hints ----
+    if "http_server" in metadata:
+        server = metadata["http_server"].lower()
+        if "plc" in server or "s7" in server:
+            asset_type = "PLC (web interface)"
+            confidence = "Medium"
+        elif "hmi" in server:
+            asset_type = "HMI (web)"
+            confidence = "Medium"
+        if asset_type != "Unknown":
+            return asset_type, confidence, additional_info
+
+    # ---- Fallback based on protocols ----
+    if protocols:
+        if any(p in protocols for p in ["Siemens S7comm", "PROFINET DCP"]):
+            asset_type = "Siemens OT Device"
+            confidence = "Medium"
+        elif "EtherNet/IP (CIP)" in protocols:
+            asset_type = "Rockwell OT Device"
+            confidence = "Medium"
+        elif "BACnet" in protocols:
+            asset_type = "BACnet Device"
+            confidence = "Medium"
+        elif "DNP3" in protocols:
+            asset_type = "DNP3 Device"
+            confidence = "Medium"
+        elif "Modbus/TCP" in protocols:
+            asset_type = "Modbus Device"
+            confidence = "Medium"
+        else:
+            asset_type = "OT Device (unspecified)"
+            confidence = "Low"
+
+    return asset_type, confidence, additional_info
+
+# =============================================================================
+# 5. NETWORK MAPPING USING PLOTCAP API
+# =============================================================================
+
+@st.cache_data(ttl=3600)
+def get_conversations_plotcap(pcap_path: str, layer: int = 3) -> Dict[Tuple[str, str], int]:
+    """Extract IP conversations using plotcap."""
+    try:
+        convs = parse_file(pcap_file=pcap_path, layer=layer)
+        result = {}
+        for conv, count in convs.items():
+            result[(conv.src, conv.dst)] = count
+        return result
+    except Exception as e:
+        st.error(f"plotcap error: {e}")
+        return {}
+
+def build_network_graph(conversations: Dict[Tuple[str, str], int],
+                        ip_to_asset: Dict[str, str]) -> nx.Graph:
     G = nx.Graph()
-    
-    # Add nodes with attributes
-    for ip, asset_type in ip_to_asset_type.items():
-        G.add_node(ip, 
-                   asset_type=asset_type,
-                   label=f"{ip}\n{asset_type[:20]}")
-    
-    # Add edges from general conversations
-    for conv in conversations:
-        src = conv.get("source")
-        dst = conv.get("destination")
-        if src and dst and src in G and dst in G:
-            G.add_edge(src, dst, 
-                       weight=conv.get("packets", 1),
-                       bytes=conv.get("bytes", 0),
-                       protocols=[])
-    
-    # Add protocol-specific edge attributes
-    for protocol, conv_list in protocol_conversations.items():
-        for src, dst in conv_list:
-            if src in G and dst in G:
-                if G.has_edge(src, dst):
-                    # Add protocol to existing edge
-                    protocols = G[src][dst].get("protocols", [])
-                    if protocol not in protocols:
-                        protocols.append(protocol)
-                    G[src][dst]["protocols"] = protocols
-                else:
-                    # Create edge with this protocol
-                    G.add_edge(src, dst, weight=1, protocols=[protocol], bytes=0)
-    
+    all_ips = set()
+    for (src, dst) in conversations.keys():
+        all_ips.add(src)
+        all_ips.add(dst)
+    for ip in all_ips:
+        asset_type = ip_to_asset.get(ip, "Unknown")
+        G.add_node(ip, asset_type=asset_type, label=f"{ip}\n{asset_type[:20]}")
+    for (src, dst), count in conversations.items():
+        if src in G and dst in G:
+            G.add_edge(src, dst, weight=count, packets=count)
     return G
 
-
-def create_plotly_network_graph(G: nx.Graph) -> go.Figure:
-    """
-    Create an interactive Plotly network visualization.
-    
-    Args:
-        G: NetworkX graph with node and edge attributes
-    
-    Returns:
-        Plotly figure object
-    """
-    # Node positions using spring layout
+def create_plotly_network(G: nx.Graph) -> go.Figure:
     pos = nx.spring_layout(G, k=1.5, iterations=50, seed=42)
-    
-    # Extract node positions
-    node_x = []
-    node_y = []
-    node_text = []
-    node_colors = []
-    
-    # Color mapping for asset types
+    node_x, node_y, node_colors, node_text = [], [], [], []
     color_map = {
         "PLC": "#FF6B6B",
-        "HMI": "#4ECDC4", 
-        "RTU": "#45B7D1",
-        "I/O Device": "#96CEB4",
-        "Network Switch": "#FFEAA7",
-        "Engineering WS": "#DDA0DD",
+        "HMI": "#4ECDC4",
+        "I/O": "#96CEB4",
+        "Drive": "#FFEAA7",
+        "Switch": "#45B7D1",
+        "RTU": "#DDA0DD",
         "Unknown": "#95A5A6"
     }
-    
     for node in G.nodes():
         x, y = pos[node]
         node_x.append(x)
         node_y.append(y)
-        
-        asset_type = G.nodes[node].get("asset_type", "Unknown")
-        # Simplify asset type for display
-        simple_type = asset_type.split()[0] if asset_type else "Unknown"
-        color = color_map.get(simple_type, "#95A5A6")
-        node_colors.append(color)
-        
-        node_text.append(f"{node}<br>Type: {asset_type}")
-    
-    # Create edge traces
-    edge_x = []
-    edge_y = []
-    edge_widths = []
-    
-    for edge in G.edges(data=True):
+        asset = G.nodes[node].get("asset_type", "Unknown")
+        simple = asset.split()[0] if asset else "Unknown"
+        if simple not in color_map:
+            simple = "Unknown"
+        node_colors.append(color_map[simple])
+        node_text.append(f"{node}<br>Type: {asset}")
+    edge_x, edge_y = [], []
+    for edge in G.edges():
         x0, y0 = pos[edge[0]]
         x1, y1 = pos[edge[1]]
         edge_x.extend([x0, x1, None])
         edge_y.extend([y0, y1, None])
-        
-        # Edge width based on weight (packet count)
-        weight = edge[2].get("weight", 1)
-        # Normalize weight to width between 1 and 8
-        width = min(8, max(1, weight / 100))
-        edge_widths.append(width)
-    
-    # Create figure
     fig = go.Figure()
-    
-    # Add edges
-    fig.add_trace(go.Scatter(
-        x=edge_x, y=edge_y,
-        mode='lines',
-        line=dict(width=1, color='#888'),
-        hoverinfo='none',
-        showlegend=False
-    ))
-    
-    # Add nodes
-    fig.add_trace(go.Scatter(
-        x=node_x, y=node_y,
-        mode='markers+text',
-        marker=dict(
-            size=20,
-            color=node_colors,
-            line=dict(width=2, color='white')
-        ),
-        text=[G.nodes[n].get("label", n)[:15] for n in G.nodes()],
-        textposition="bottom center",
-        textfont=dict(size=10),
-        hovertext=node_text,
-        hoverinfo='text',
-        showlegend=False
-    ))
-    
-    # Update layout
-    fig.update_layout(
-        title="OT Network Architecture Map",
-        showlegend=False,
-        hovermode='closest',
-        margin=dict(b=20, l=5, r=5, t=40),
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        height=600,
-        plot_bgcolor='#1e1e1e',
-        paper_bgcolor='#1e1e1e',
-        font=dict(color='white')
-    )
-    
+    fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode='lines', line=dict(width=1, color='#888'), hoverinfo='none'))
+    fig.add_trace(go.Scatter(x=node_x, y=node_y, mode='markers+text',
+                             marker=dict(size=20, color=node_colors, line=dict(width=2, color='white')),
+                             text=[G.nodes[n].get("label", n)[:15] for n in G.nodes()],
+                             textposition="bottom center", hovertext=node_text, hoverinfo='text'))
+    fig.update_layout(title="OT Network Topology", showlegend=False, height=600,
+                      xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                      yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                      plot_bgcolor='#1e1e1e', paper_bgcolor='#1e1e1e', font=dict(color='white'))
     return fig
 
-
-def create_force_directed_html(G: nx.Graph) -> str:
-    """
-    Create an interactive force-directed graph using PyVis-style HTML.
-    This requires plotcap or manual HTML generation.
-    """
-    # Alternative: Use plotcap library for automatic visualization
-    # plotcap -f capture.pcap --layer3
-    # Returns HTML string
-    
-    import json
-    
-    # Prepare data for D3.js force graph
-    nodes = []
-    for node in G.nodes():
-        nodes.append({
-            "id": node,
-            "label": node,
-            "group": G.nodes[node].get("asset_type", "Unknown")
-        })
-    
-    edges = []
-    for edge in G.edges(data=True):
-        edges.append({
-            "from": edge[0],
-            "to": edge[1],
-            "value": edge[2].get("weight", 1)
-        })
-    
-    # Generate HTML with embedded D3.js
-    html_template = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <title>OT Network Map</title>
-        <style>
-            body {{ margin: 0; padding: 0; font-family: Arial, sans-serif; }}
-            #graph {{ width: 100%; height: 600px; }}
-        </style>
-        <script src="https://d3js.org/d3.v7.min.js"></script>
-    </head>
-    <body>
-        <div id="graph"></div>
-        <script>
-            const nodesData = {json.dumps(nodes)};
-            const edgesData = {json.dumps(edges)};
-            
-            // D3 force simulation code would go here
-            // This is a placeholder - full D3 implementation requires more code
-            document.getElementById('graph').innerHTML = 
-                '<div style="padding:20px">Network Graph with ' + 
-                nodesData.length + ' nodes and ' + edgesData.length + ' edges</div>';
-        </script>
-    </body>
-    </html>
-    """
-    
-    return html_template
-
-
-# ============================================================================
-# MAIN STREAMLIT APP (Extend your existing app)
-# ============================================================================
+# =============================================================================
+# 6. MAIN STREAMLIT APP
+# =============================================================================
 
 def main():
-    st.set_page_config(page_title="OT Asset Discovery & Network Map", layout="wide")
-    st.title("🏭 OT Asset Discovery & Network Architecture Mapping")
-    st.markdown("Upload a PCAP file to discover OT assets and visualize network topology.")
-    
     uploaded_file = st.file_uploader("Choose a PCAP file", type=["pcap", "pcapng"])
-    
     if not uploaded_file:
         st.info("👈 Upload a PCAP file to start analysis")
         return
-    
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pcap") as tmp:
         tmp.write(uploaded_file.getbuffer())
         pcap_path = tmp.name
-    
+
     st.info(f"📡 Analyzing {uploaded_file.name}...")
-    
-    # Create tabs for different views
-    tab1, tab2, tab3 = st.tabs(["📊 Asset List", "🗺️ Network Map", "📈 Traffic Analysis"])
-    
-    # ========== TAB 1: Asset List (from previous code) ==========
+
+    # ---- Extract asset metadata from PCAP ----
+    ip_to_protocols = defaultdict(set)
+    ip_to_metadata = defaultdict(dict)
+
+    progress_bar = st.progress(0)
+    total_protos = len(PROTOCOLS)
+    for idx, (key, proto) in enumerate(PROTOCOLS.items()):
+        progress_bar.progress((idx+1)/total_protos, text=f"Processing {proto['name']}...")
+        lines = run_tshark(pcap_path, proto["filter"], proto["fields"])
+        for line in lines:
+            parts = line.split('\t')
+            # Find IP address (first field that looks like IPv4)
+            ip = None
+            for p in parts:
+                if re.match(r'^\d+\.\d+\.\d+\.\d+$', p):
+                    ip = p
+                    break
+            if not ip:
+                continue
+            ip_to_protocols[ip].add(proto["name"])
+            # Store asset-specific fields
+            for attr, field in proto.get("asset", {}).items():
+                try:
+                    idx_field = proto["fields"].index(field)
+                    if idx_field < len(parts) and parts[idx_field]:
+                        ip_to_metadata[ip][attr] = parts[idx_field]
+                except ValueError:
+                    pass
+    progress_bar.empty()
+
+    # ---- Classify each asset ----
+    assets = []
+    for ip, protos in ip_to_protocols.items():
+        asset_type, confidence, info = classify_asset_type(ip, protos, ip_to_metadata.get(ip, {}))
+        assets.append({
+            "IP Address": ip,
+            "Asset Type": asset_type,
+            "Confidence": confidence,
+            "Protocols": ", ".join(sorted(protos)),
+            "Additional Info": ", ".join(f"{k}:{v}" for k,v in info.items())
+        })
+
+    # ---- Build network map using plotcap ----
+    with st.spinner("Building network topology..."):
+        conversations = get_conversations_plotcap(pcap_path, layer=3)
+    ip_to_asset = {a["IP Address"]: a["Asset Type"] for a in assets}
+    G = build_network_graph(conversations, ip_to_asset)
+
+    # ---- Display results in tabs ----
+    tab1, tab2 = st.tabs(["📋 Asset List", "🗺️ Network Map"])
+
     with tab1:
-        # Your existing asset discovery code here
-        # (Refer to previous response for complete asset classification)
-        st.subheader("Discovered OT Assets")
-        # ... asset classification code ...
-    
-    # ========== TAB 2: Network Map ==========
+        if assets:
+            df = pd.DataFrame(assets)
+            st.subheader("Discovered OT Assets")
+            st.dataframe(df, use_container_width=True)
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download CSV", csv, "ot_assets.csv", "text/csv")
+            st.metric("Total Assets", len(assets))
+        else:
+            st.warning("No OT assets detected.")
+
     with tab2:
-        st.subheader("OT Network Architecture Map")
-        
-        # Extract conversations
-        with st.spinner("Extracting network conversations..."):
-            conversations = extract_conversations(pcap_path, "ip")
-            
-            # Extract protocol-specific conversations
-            protocol_conversations = {}
-            for proto in ["modbus", "s7comm", "dnp3", "cip", "bacnet"]:
-                convs = extract_protocol_conversations(pcap_path, proto)
-                if convs:
-                    protocol_conversations[proto] = convs
-        
-        # Build mock asset types for demonstration
-        # In production, use your asset classification results
-        all_ips = set()
-        for conv in conversations:
-            all_ips.add(conv.get("source"))
-            all_ips.add(conv.get("destination"))
-        
-        # Assign asset types (replace with actual classification)
-        ip_to_asset = {}
-        for idx, ip in enumerate(all_ips):
-            # Simplified assignment - use your classification results
-            if idx % 4 == 0:
-                ip_to_asset[ip] = "PLC (Siemens S7-1200)"
-            elif idx % 4 == 1:
-                ip_to_asset[ip] = "HMI / SCADA"
-            elif idx % 4 == 2:
-                ip_to_asset[ip] = "I/O Device"
-            else:
-                ip_to_asset[ip] = "Network Switch"
-        
-        # Build graph
-        G = build_network_graph(ip_to_asset, conversations, protocol_conversations)
-        
         if G.number_of_nodes() > 0:
-            # Create interactive Plotly graph
-            fig = create_plotly_network_graph(G)
+            st.subheader("Communication Topology")
+            fig = create_plotly_network(G)
             st.plotly_chart(fig, use_container_width=True)
-            
-            # Display statistics
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total Assets", G.number_of_nodes())
-            col2.metric("Communication Links", G.number_of_edges())
-            col3.metric("Protocols Detected", len(protocol_conversations))
-            
-            # Display edge list
-            with st.expander("📋 Detailed Communication Matrix"):
-                edge_data = []
-                for edge in G.edges(data=True):
-                    edge_data.append({
-                        "Source": edge[0],
-                        "Destination": edge[1],
-                        "Protocols": ", ".join(edge[2].get("protocols", ["Unknown"])),
-                        "Traffic Volume": f"{edge[2].get('bytes', 0):,} bytes"
-                    })
-                st.dataframe(pd.DataFrame(edge_data), use_container_width=True)
+            st.caption(f"Nodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}")
         else:
-            st.warning("No network conversations found in the PCAP file.")
-    
-    # ========== TAB 3: Traffic Analysis ==========
-    with tab3:
-        st.subheader("Protocol Traffic Distribution")
-        
-        # Count packets per protocol
-        protocol_counts = {}
-        for proto in ["modbus", "s7comm", "dnp3", "cip", "bacnet", "http", "snmp"]:
-            cmd = ["tshark", "-r", pcap_path, "-Y", proto, "-T", "fields", "-e", "frame.number"]
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-                count = len(result.stdout.strip().splitlines())
-                if count > 0:
-                    protocol_counts[proto] = count
-            except:
-                pass
-        
-        if protocol_counts:
-            # Create bar chart
-            fig = go.Figure(data=[
-                go.Bar(x=list(protocol_counts.keys()), 
-                       y=list(protocol_counts.values()),
-                       marker_color='#4ECDC4')
-            ])
-            fig.update_layout(
-                title="Packet Count by Protocol",
-                xaxis_title="Protocol",
-                yaxis_title="Packet Count",
-                height=400,
-                plot_bgcolor='#1e1e1e',
-                paper_bgcolor='#1e1e1e'
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No OT protocol traffic detected.")
-    
+            st.info("No network conversations found.")
+
     # Cleanup
     os.unlink(pcap_path)
-
 
 if __name__ == "__main__":
     # Check tshark availability
