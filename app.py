@@ -1,9 +1,9 @@
 """
-OT/IT Asset Discovery – CyberMesh OT/IT Analyzer
-- Exhaustive protocol detection (OT & IT) using tshark
-- MAC OUI & vendor ID lookups
-- Professional vis-network topology (draggable, zoomable, full-screen)
-- Dark theme with cyan/teal accents
+CyberShield OT/IT Asset Discovery
+- Exhaustive asset identification using tshark
+- Interactive network topology with Plotly
+- Geospatial visualization with Folium
+- MAC OUI vendor lookup
 """
 
 import streamlit as st
@@ -12,288 +12,153 @@ import tempfile
 import os
 import re
 import pandas as pd
-import json
 import networkx as nx
+import plotly.graph_objects as go
+import folium
+from folium.plugins import MarkerCluster
 from collections import defaultdict
+import json
 
 # =============================================================================
-# PAGE CONFIG & PROFESSIONAL DARK THEME
+# PAGE CONFIG & THEME
 # =============================================================================
-st.set_page_config(page_title="CyberMesh OT/IT Analyzer", layout="wide", page_icon="🔍")
+st.set_page_config(page_title="CyberShield OT/IT Asset Discovery", layout="wide", page_icon="🛡️")
 
-# Custom CSS for professional dark theme (cyan/teal accents)
+# Professional dark theme (teal accents)
 st.markdown("""
 <style>
-    /* Global background */
-    .stApp {
-        background-color: #0b0f1c !important;
-    }
-    /* All text – ensure visibility */
+    .stApp { background-color: #0f0f0f !important; }
     body, p, div, span, label, .stText, .stMarkdown, .stAlert, .stException,
     .stCodeBlock, code, pre, .stExpander, .stExpander p, .stExpander div {
-        color: #e2e8f0 !important;
+        color: #e0e0e0 !important;
     }
-    /* Headers */
-    h1, h2, h3, h4, h5, h6, .stHeader {
-        color: #2dd4bf !important;
-        font-weight: 600 !important;
-    }
-    /* Sidebar */
-    .css-1d391kg, .stSidebar {
-        background-color: #0a0e1a !important;
-    }
-    /* Tabs at top */
+    h1, h2, h3, h4, h5, h6, .stHeader { color: #2ecc71 !important; font-weight: 600 !important; }
     .stTabs [data-baseweb="tab-list"] {
-        gap: 24px;
-        background-color: #111827;
-        padding: 10px 20px;
-        border-radius: 12px;
+        gap: 24px; background-color: #1e1e1e; padding: 10px 20px; border-radius: 8px;
     }
     .stTabs [data-baseweb="tab"] {
-        background-color: transparent;
-        color: #e2e8f0 !important;
-        font-weight: bold;
-        font-size: 16px;
-        border-radius: 8px;
-        padding: 8px 16px;
+        background-color: transparent; color: #e0e0e0 !important; font-weight: bold;
+        font-size: 16px; border-radius: 8px; padding: 8px 16px;
     }
     .stTabs [aria-selected="true"] {
-        background-color: #2dd4bf !important;
-        color: #0b0f1c !important;
+        background-color: #2ecc71 !important; color: #000000 !important;
     }
-    /* Dataframe */
     .dataframe, .stDataFrame {
-        background-color: #111827 !important;
-        color: #e2e8f0 !important;
-        border-collapse: collapse;
-        width: 100%;
+        background-color: #1e1e1e !important; color: #e0e0e0 !important;
     }
     .dataframe th, .stDataFrame th {
-        background-color: #1e2a3a !important;
-        color: #2dd4bf !important;
-        border: 1px solid #2d3748;
-        padding: 8px;
+        background-color: #2a2a2a !important; color: #2ecc71 !important;
     }
-    .dataframe td, .stDataFrame td {
-        border: 1px solid #2d3748;
-        padding: 8px;
-        color: #e2e8f0;
-    }
-    /* Metric boxes */
     .stMetric {
-        background-color: #111827 !important;
-        border-radius: 12px;
-        padding: 12px;
-        border-left: 4px solid #2dd4bf;
+        background-color: #1e1e1e !important; border-left: 4px solid #2ecc71;
     }
-    .stMetric label, .stMetric .stMetricLabel {
-        color: #2dd4bf !important;
-    }
-    .stMetric .stMetricValue {
-        color: #ffffff !important;
-        font-size: 28px !important;
-        font-weight: bold;
-    }
-    /* Expander */
-    .streamlit-expanderHeader {
-        background-color: #111827 !important;
-        color: #2dd4bf !important;
-        border-radius: 8px;
-    }
-    .streamlit-expanderContent {
-        background-color: #0b0f1c !important;
-        color: #e2e8f0 !important;
-    }
-    /* Info / Success / Warning boxes */
-    .stAlert {
-        background-color: #111827 !important;
-        border-left: 4px solid #2dd4bf !important;
-        color: #e2e8f0 !important;
-    }
-    .stAlert .stMarkdown {
-        color: #e2e8f0 !important;
-    }
-    /* Buttons */
+    .stMetric label, .stMetric .stMetricLabel { color: #2ecc71 !important; }
+    .stMetric .stMetricValue { color: #ffffff !important; font-size: 28px !important; }
     .stButton button {
-        background-color: #2dd4bf !important;
-        color: #0b0f1c !important;
-        border: none;
-        border-radius: 8px;
-        padding: 8px 16px;
-        font-weight: bold;
+        background-color: #2ecc71 !important; color: #000000 !important;
+        border-radius: 8px; font-weight: bold;
     }
-    .stButton button:hover {
-        background-color: #14b8a6 !important;
-        color: #0b0f1c;
-    }
-    /* File uploader */
     .stFileUploader {
-        background-color: #111827 !important;
-        border: 1px dashed #2dd4bf !important;
-        border-radius: 8px;
+        background-color: #1e1e1e !important; border: 1px dashed #2ecc71 !important;
     }
-    /* Code blocks */
-    code, pre {
-        background-color: #1e2a3a !important;
-        color: #2dd4bf !important;
-        border-radius: 6px;
-    }
-    /* Text input */
-    .stTextInput input {
-        background-color: #1e2a3a !important;
-        color: #e2e8f0 !important;
-        border: 1px solid #2dd4bf !important;
-        border-radius: 8px;
-    }
-    /* Success message */
-    .stSuccess {
-        background-color: #0a2a2a !important;
-        border-left-color: #2dd4bf !important;
-        color: #e2e8f0 !important;
-    }
-    /* Error message */
-    .stError {
-        background-color: #2a1a1a !important;
-        border-left-color: #f87171 !important;
-        color: #e2e8f0 !important;
-    }
-    /* Info message */
-    .stInfo {
-        background-color: #1a2a3a !important;
-        border-left-color: #2dd4bf !important;
-        color: #e2e8f0 !important;
-    }
-    /* Captions and small text */
-    .stCaption, .stSmallText {
-        color: #94a3b8 !important;
-    }
+    .stFileUploader label, .stFileUploader .stMarkdown { color: #e0e0e0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# Optional logo – replace with your own if desired
-# st.image("logo.png", width=150)
-
-st.title("🔍 CyberMesh OT/IT Analyzer")
-st.markdown("*Exhaustive asset discovery and network mapping for industrial control systems*")
+st.title("🛡️ CyberShield OT/IT Asset Discovery")
+st.markdown("*Professional network mapping for industrial control and IT systems*")
 
 # =============================================================================
-# EXHAUSTIVE CONFIGURATION
+# EXHAUSTIVE PROTOCOL & PORT CONFIGURATION
 # =============================================================================
-DEBUG = False  # Set to True for detailed tshark command output
-
-# ---------- OT Ports (standard + common non-standard) ----------
 KNOWN_OT_PORTS = {
     102: "S7comm", 502: "Modbus", 20000: "DNP3", 44818: "EtherNet/IP",
     2222: "EtherNet/IP", 47808: "BACnet", 2404: "IEC104", 34964: "PROFINET",
     4840: "OPC UA", 9600: "Omron FINS", 5000: "Mitsubishi", 5001: "Mitsubishi",
     5002: "Mitsubishi", 5006: "Mitsubishi", 5007: "Mitsubishi", 5500: "Mitsubishi",
-    6000: "Mitsubishi", 10000: "Generic OT", 20000: "DNP3", 20547: "Profinet",
+    2455: "CoDeSys", 11740: "EtherCAT", 1100: "Beckhoff ADS",
+    4000: "Siemens S7", 1111: "EtherNet/IP", 2221: "EtherNet/IP",
+    30718: "LonWorks", 1000: "Modbus", 8080: "Modbus", 5020: "Modbus"
 }
 
-# ---------- IT Ports ----------
 KNOWN_IT_PORTS = {
     80: "HTTP", 443: "HTTPS", 53: "DNS", 67: "DHCP", 68: "DHCP",
     161: "SNMP", 162: "SNMP", 22: "SSH", 23: "Telnet", 21: "FTP",
     445: "SMB", 139: "SMB", 123: "NTP", 25: "SMTP", 110: "POP3",
     143: "IMAP", 3389: "RDP", 3306: "MySQL", 5432: "PostgreSQL",
-    27017: "MongoDB", 6379: "Redis", 5432: "PostgreSQL",
+    6379: "Redis", 27017: "MongoDB", 8080: "HTTP-Alt", 8443: "HTTPS-Alt",
+    389: "LDAP", 636: "LDAPS", 514: "Syslog", 500: "IPsec",
+    4500: "IPsec", 1812: "RADIUS", 1813: "RADIUS"
 }
 
-# ---------- Protocol Detectors (exhaustive) ----------
 PROTOCOL_DETECTORS = [
-    # OT Protocols
-    {"filter": "s7comm", "name": "Siemens S7comm", "category": "OT",
-     "fields": ["ip.src", "s7comm.cpu_type", "s7comm.module_type", "s7comm.identity_serial_number_of_module"]},
-    {"filter": "modbus", "name": "Modbus/TCP", "category": "OT",
-     "fields": ["ip.src", "modbus.unit_id", "modbus.func_code"]},
-    {"filter": "dnp3", "name": "DNP3", "category": "OT",
-     "fields": ["ip.src", "dnp3.src", "dnp3.dst", "dnp3.object_header"]},
-    {"filter": "cip", "name": "EtherNet/IP (CIP)", "category": "OT",
-     "fields": ["ip.src", "cip.vendor_id", "cip.product_name", "cip.serial_number", "cip.device_type"]},
-    {"filter": "bacnet", "name": "BACnet", "category": "OT",
-     "fields": ["ip.src", "bacnet.object_name", "bacnet.vendor_id", "bacnet.model_name", "bacnet.firmware_revision"]},
-    {"filter": "pn_dcp", "name": "PROFINET DCP", "category": "OT",
-     "fields": ["pn_dcp.station_name", "pn_dcp.ip_address", "pn_dcp.device_role", "pn_dcp.vendor_id", "pn_dcp.device_id"]},
-    {"filter": "iec104", "name": "IEC 60870-5-104", "category": "OT",
-     "fields": ["ip.src", "iec104.asdu_type", "iec104.cot"]},
-    {"filter": "opcua", "name": "OPC UA", "category": "OT",
-     "fields": ["ip.src", "opcua.ServerUris", "opcua.NamespaceArray"]},
-    {"filter": "profinet", "name": "PROFINET IO", "category": "OT",
-     "fields": ["ip.src", "pn_io.slot", "pn_io.subslot"]},
-    {"filter": "hartip", "name": "HART-IP", "category": "OT",
-     "fields": ["ip.src", "hartip.device_id", "hartip.manufacturer_id"]},
-    {"filter": "fins", "name": "FINS (Omron)", "category": "OT",
-     "fields": ["ip.src", "fins.da", "fins.sa"]},
-    {"filter": "melsec", "name": "Melsec (Mitsubishi)", "category": "OT",
-     "fields": ["ip.src", "melsec.plc_type", "melsec.station"]},
-    # IT Protocols
-    {"filter": "http", "name": "HTTP", "category": "IT",
-     "fields": ["ip.src", "http.host", "http.user_agent", "http.server"]},
-    {"filter": "tls.handshake", "name": "HTTPS/TLS", "category": "IT",
-     "fields": ["ip.src", "tls.handshake.extensions_server_name"]},
-    {"filter": "dns", "name": "DNS", "category": "IT",
-     "fields": ["ip.src", "dns.qry.name", "dns.resp.name"]},
-    {"filter": "dhcp", "name": "DHCP", "category": "IT",
-     "fields": ["ip.src", "dhcp.option.hostname", "dhcp.option.vendor_class"]},
-    {"filter": "snmp", "name": "SNMP", "category": "IT",
-     "fields": ["ip.src", "snmp.sysDescr", "snmp.sysName", "snmp.sysObjectID"]},
-    {"filter": "ssh", "name": "SSH", "category": "IT",
-     "fields": ["ip.src", "ssh.server.version"]},
-    {"filter": "telnet", "name": "Telnet", "category": "IT",
-     "fields": ["ip.src", "telnet.subnegotiation"]},
-    {"filter": "ftp", "name": "FTP", "category": "IT",
-     "fields": ["ip.src", "ftp.request.command"]},
-    {"filter": "smb", "name": "SMB/CIFS", "category": "IT",
-     "fields": ["ip.src", "smb.dialect", "smb.server_component"]},
-    {"filter": "ntp", "name": "NTP", "category": "IT",
-     "fields": ["ip.src", "ntp.ref_id", "ntp.stratum"]},
-    {"filter": "lldp", "name": "LLDP", "category": "IT",
-     "fields": ["lldp.system_name", "lldp.system_description"]},
+    # OT
+    {"filter": "s7comm", "name": "Siemens S7comm", "category": "OT", "fields": ["ip.src", "s7comm.cpu_type", "s7comm.module_type"]},
+    {"filter": "modbus", "name": "Modbus/TCP", "category": "OT", "fields": ["ip.src", "modbus.unit_id"]},
+    {"filter": "dnp3", "name": "DNP3", "category": "OT", "fields": ["ip.src", "dnp3.src"]},
+    {"filter": "cip", "name": "EtherNet/IP (CIP)", "category": "OT", "fields": ["ip.src", "cip.vendor_id", "cip.product_name"]},
+    {"filter": "bacnet", "name": "BACnet", "category": "OT", "fields": ["ip.src", "bacnet.object_name", "bacnet.vendor_id"]},
+    {"filter": "pn_dcp", "name": "PROFINET DCP", "category": "OT", "fields": ["pn_dcp.station_name", "pn_dcp.ip_address"]},
+    {"filter": "iec104", "name": "IEC 60870-5-104", "category": "OT", "fields": ["ip.src"]},
+    {"filter": "opcua", "name": "OPC UA", "category": "OT", "fields": ["ip.src"]},
+    {"filter": "profinet", "name": "PROFINET IO", "category": "OT", "fields": ["ip.src"]},
+    {"filter": "goose", "name": "IEC 61850 GOOSE", "category": "OT", "fields": ["ip.src", "goose.appid"]},
+    {"filter": "mms", "name": "IEC 61850 MMS", "category": "OT", "fields": ["ip.src", "mms.domain"]},
+    {"filter": "fins", "name": "Omron FINS", "category": "OT", "fields": ["ip.src"]},
+    {"filter": "melsec", "name": "Mitsubishi Melsec", "category": "OT", "fields": ["ip.src"]},
+    {"filter": "hartip", "name": "HART-IP", "category": "OT", "fields": ["ip.src"]},
+    {"filter": "ethercat", "name": "EtherCAT", "category": "OT", "fields": ["ip.src"]},
+    {"filter": "ads", "name": "Beckhoff ADS", "category": "OT", "fields": ["ip.src"]},
+    {"filter": "codesys", "name": "CoDeSys", "category": "OT", "fields": ["ip.src"]},
+    {"filter": "lonworks", "name": "LonWorks", "category": "OT", "fields": ["ip.src"]},
+    # IT
+    {"filter": "http", "name": "HTTP", "category": "IT", "fields": ["ip.src", "http.host", "http.user_agent", "http.server"]},
+    {"filter": "tls.handshake", "name": "HTTPS/TLS", "category": "IT", "fields": ["ip.src", "tls.handshake.extensions_server_name"]},
+    {"filter": "dns", "name": "DNS", "category": "IT", "fields": ["ip.src", "dns.qry.name", "dns.resp.name"]},
+    {"filter": "dhcp", "name": "DHCP", "category": "IT", "fields": ["ip.src", "dhcp.option.hostname", "dhcp.option.vendor_class"]},
+    {"filter": "snmp", "name": "SNMP", "category": "IT", "fields": ["ip.src", "snmp.sysDescr", "snmp.sysName"]},
+    {"filter": "ssh", "name": "SSH", "category": "IT", "fields": ["ip.src", "ssh.server.version"]},
+    {"filter": "telnet", "name": "Telnet", "category": "IT", "fields": ["ip.src"]},
+    {"filter": "ftp", "name": "FTP", "category": "IT", "fields": ["ip.src"]},
+    {"filter": "smb", "name": "SMB/CIFS", "category": "IT", "fields": ["ip.src"]},
+    {"filter": "ntp", "name": "NTP", "category": "IT", "fields": ["ip.src"]},
+    {"filter": "lldp", "name": "LLDP", "category": "IT", "fields": ["lldp.system_name", "lldp.system_description"]},
+    {"filter": "cdp", "name": "Cisco CDP", "category": "IT", "fields": ["cdp.device_id", "cdp.platform"]},
+    {"filter": "icmp", "name": "ICMP (Ping)", "category": "IT", "fields": ["ip.src"]},
+    {"filter": "arp", "name": "ARP", "category": "IT", "fields": ["arp.src.proto_ipv4", "arp.src.hw_mac"]},
 ]
 
-# ---------- MAC OUI Database (exhaustive) ----------
+# MAC OUI database (extended)
 OUI_DB = {
-    # Virtual / Hypervisors
     "00:0C:29": "VMware", "00:50:56": "VMware", "08:00:27": "Oracle VirtualBox",
-    "00:15:5D": "Microsoft Hyper-V", "00:16:3E": "Xensource",
-    # Networking
-    "00:1C:42": "Cisco", "00:0F:FE": "Huawei", "00:0D:4B": "Phoenix Contact",
-    "00:1B:21": "Rockwell Automation", "00:0A:35": "Schneider Electric",
-    # Industrial
-    "00:0F:9F": "Siemens", "00:0E:8F": "ABB", "00:1E:37": "Mitsubishi Electric",
-    "00:0E:6B": "Omron", "00:80:F4": "GE Fanuc", "00:1F:45": "Beckhoff",
-    "00:30:48": "WAGO", "00:02:68": "Hirschmann", "00:04:A3": "Moxa",
-    # General IT
-    "00:14:22": "Dell", "00:1A:6B": "HP", "B8:27:EB": "Raspberry Pi",
-    "00:25:9C": "Apple", "00:0C:F1": "Samsung", "00:1E:EC": "Intel",
-    # More
-    "00:0A:E4": "SMC", "00:0B:CD": "Honeywell", "00:0C:41": "Yokogawa",
-    "00:10:FA": "Eaton", "00:20:4A": "Rockwell", "00:50:C2": "Siemens",
+    "00:15:5D": "Microsoft Hyper-V", "00:1C:42": "Cisco", "00:0F:FE": "Huawei",
+    "00:0F:9F": "Siemens", "00:1B:21": "Rockwell Automation", "00:0A:35": "Schneider Electric",
+    "00:0E:8F": "ABB", "00:0D:4B": "Phoenix Contact", "00:1E:37": "Mitsubishi Electric",
+    "00:0E:6B": "Omron", "00:80:F4": "GE Fanuc", "00:1F:45": "Beckhoff", "00:30:48": "WAGO",
+    "00:04:AB": "Honeywell", "00:03:BA": "Emerson", "00:1D:9C": "Yokogawa",
+    "00:23:CD": "Endress+Hauser", "00:21:9B": "Pepperl+Fuchs", "00:22:FB": "Ifm Electronic",
+    "00:1C:CC": "Balluff", "00:07:3E": "Turck", "00:0F:53": "Parker Hannifin",
+    "00:1C:B3": "SICK", "00:16:4D": "Keyence", "00:30:DE": "Festo", "00:24:1A": "SMC",
+    "00:1A:6B": "HP", "00:14:22": "Dell", "B8:27:EB": "Raspberry Pi", "00:16:3E": "Xensource",
+    "00:0C:41": "Juniper", "00:17:5A": "Fortinet", "00:18:73": "Palo Alto", "00:11:22": "Apple",
+    "00:1B:63": "Apple", "00:1E:C2": "Apple", "00:25:00": "Apple", "00:0F:EA": "Apple",
+    "00:19:D1": "Samsung", "00:21:E6": "Samsung", "00:22:FD": "Samsung", "00:24:54": "Samsung",
+    "00:1B:FC": "Google", "00:22:41": "Google", "00:23:7D": "Google", "00:1E:6F": "Amazon",
+    "00:22:5F": "Amazon", "00:24:7C": "Amazon", "00:1C:DF": "Microsoft", "00:1F:3B": "Microsoft",
+    "00:0D:3A": "Intel", "00:1B:21": "Intel", "00:1C:BF": "Intel",
 }
 
-# ---------- CIP Vendor ID Map (EtherNet/IP) ----------
-CIP_VENDOR_MAP = {
-    "1": "Rockwell Automation", "2": "Schneider Electric", "3": "Siemens",
-    "4": "ABB", "5": "Honeywell", "6": "Emerson", "7": "Yokogawa",
-    "8": "Mitsubishi Electric", "9": "Omron", "10": "Keyence",
-    "11": "Panasonic", "12": "Fuji Electric", "13": "Hitachi",
-    "14": "Toshiba", "15": "Eaton", "16": "Parker Hannifin",
-    "17": "Bosch Rexroth", "18": "Beckhoff", "19": "B&R Automation",
-    "20": "Phoenix Contact", "21": "WAGO", "22": "Turck",
-    "23": "Ifm Electronic", "24": "Balluff", "25": "Pepperl+Fuchs",
-    "44": "Schneider Electric (Telemechanique)", "57": "Siemens",
-    "111": "Phoenix Contact",
-}
-
-# ---------- PROFINET Vendor ID Map ----------
-PN_VENDOR_MAP = {
-    "002a": "Siemens", "001b": "Rockwell Automation", "005a": "Schneider Electric",
-    "001c": "ABB", "006f": "Phoenix Contact", "0060": "Bosch Rexroth",
-    "0078": "B&R Automation", "003c": "Mitsubishi Electric", "003d": "Omron",
-}
+def get_vendor_from_mac(mac):
+    if not mac or mac == "Unknown":
+        return "Unknown"
+    mac_upper = mac.upper().replace("-", ":").replace(".", ":")
+    for prefix, vendor in OUI_DB.items():
+        if mac_upper.startswith(prefix.upper()):
+            return vendor
+    return "Unknown"
 
 # =============================================================================
-# HELPER FUNCTIONS
+# TSHARK HELPER FUNCTIONS
 # =============================================================================
 def run_tshark(pcap_path, display_filter, fields, decode_as=None):
     cmd = ["tshark", "-r", pcap_path]
@@ -304,8 +169,7 @@ def run_tshark(pcap_path, display_filter, fields, decode_as=None):
     cmd.extend(["-T", "fields"])
     for f in fields:
         cmd.extend(["-e", f])
-    if not DEBUG:
-        cmd.append("-q")
+    cmd.append("-q")
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         return result.stdout.strip().splitlines() if result.stdout else [], None
@@ -316,7 +180,7 @@ def detect_ips_by_ports(pcap_path, port_map):
     ips = set()
     for port in port_map.keys():
         cmd = ["tshark", "-r", pcap_path, "-Y", f"tcp.port=={port} or udp.port=={port}",
-               "-T", "fields", "-e", "ip.src", "-e", "ip.dst"]
+               "-T", "fields", "-e", "ip.src", "-e", "ip.dst", "-q"]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, check=False)
             for line in result.stdout.split('\n'):
@@ -328,11 +192,10 @@ def detect_ips_by_ports(pcap_path, port_map):
     return ips
 
 def detect_ips_by_protocol_string(pcap_path):
-    ot_keywords = ['s7comm', 'modbus', 'dnp3', 'cip', 'bacnet', 'profinet', 'iec104', 'opcua', 'hartip', 'fins', 'melsec']
-    it_keywords = ['http', 'dns', 'dhcp', 'snmp', 'ssh', 'telnet', 'ftp', 'smb', 'ntp', 'lldp']
-    keywords = ot_keywords + it_keywords
+    keywords = ['s7comm', 'modbus', 'dnp3', 'cip', 'bacnet', 'profinet', 'iec104', 'opcua',
+                'http', 'dns', 'dhcp', 'snmp', 'ssh', 'telnet', 'ftp', 'smb', 'ntp', 'lldp']
     ips = set()
-    cmd = ["tshark", "-r", pcap_path, "-T", "fields", "-e", "ip.src", "-e", "frame.protocols"]
+    cmd = ["tshark", "-r", pcap_path, "-T", "fields", "-e", "ip.src", "-e", "frame.protocols", "-q"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         for line in result.stdout.split('\n'):
@@ -351,7 +214,7 @@ def detect_ips_by_protocol_string(pcap_path):
 def extract_macs(pcap_path):
     ip_to_mac = {}
     # ARP
-    cmd = ["tshark", "-r", pcap_path, "-Y", "arp", "-T", "fields", "-e", "arp.src.proto_ipv4", "-e", "arp.src.hw_mac"]
+    cmd = ["tshark", "-r", pcap_path, "-Y", "arp", "-T", "fields", "-e", "arp.src.proto_ipv4", "-e", "arp.src.hw_mac", "-q"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         for line in result.stdout.split('\n'):
@@ -362,7 +225,7 @@ def extract_macs(pcap_path):
     except:
         pass
     # Ethernet + IP
-    cmd = ["tshark", "-r", pcap_path, "-T", "fields", "-e", "ip.src", "-e", "eth.src"]
+    cmd = ["tshark", "-r", pcap_path, "-T", "fields", "-e", "ip.src", "-e", "eth.src", "-q"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         for line in result.stdout.split('\n'):
@@ -386,7 +249,6 @@ def extract_assets(pcap_path, custom_decode_ports):
     if not candidate_ips:
         return ip_data
 
-    # Ports to try decode-as (common non-standard)
     ports_to_decode = [5000, 5001, 5002, 5006, 5007, 5500, 6000, 9600, 10000, 20000, 34964]
     if custom_decode_ports:
         ports_to_decode.extend(custom_decode_ports)
@@ -421,57 +283,6 @@ def extract_assets(pcap_path, custom_decode_ports):
             ip_data[ip]["category"].add("Unknown")
     return ip_data
 
-def get_vendor(metadata, mac):
-    # MAC OUI first
-    if mac and mac != "Unknown":
-        vendor = get_vendor_from_mac(mac)
-        if vendor != "Unknown":
-            return vendor
-    # CIP vendor ID
-    if "cip_vendor_id" in metadata and metadata["cip_vendor_id"] in CIP_VENDOR_MAP:
-        return CIP_VENDOR_MAP[metadata["cip_vendor_id"]]
-    # PROFINET vendor ID
-    if "pn_dcp_vendor_id" in metadata and metadata["pn_dcp_vendor_id"] in PN_VENDOR_MAP:
-        return PN_VENDOR_MAP[metadata["pn_dcp_vendor_id"]]
-    # BACnet vendor ID
-    if "bacnet_vendor_id" in metadata:
-        bacnet_vendors = {"8": "Johnson Controls", "24": "Siemens", "38": "Honeywell", "122": "Schneider Electric"}
-        if metadata["bacnet_vendor_id"] in bacnet_vendors:
-            return bacnet_vendors[metadata["bacnet_vendor_id"]]
-    # HTTP server header
-    if "http_server" in metadata:
-        server = metadata["http_server"].lower()
-        if "apache" in server:
-            return "Apache"
-        if "nginx" in server:
-            return "Nginx"
-        if "iis" in server:
-            return "Microsoft IIS"
-    # SNMP sysDescr
-    if "sysDescr" in metadata:
-        desc = metadata["sysDescr"].lower()
-        if "cisco" in desc:
-            return "Cisco"
-        if "linux" in desc:
-            return "Linux"
-        if "windows" in desc:
-            return "Windows"
-    return "Unknown"
-
-def get_vendor_from_mac(mac):
-    if not mac or mac == "Unknown":
-        return "Unknown"
-    mac_upper = mac.upper()
-    for prefix, vendor in OUI_DB.items():
-        if mac_upper.startswith(prefix.upper()):
-            return vendor
-    return "Unknown"
-
-def get_model(metadata):
-    return (metadata.get("cip_product_name") or metadata.get("bacnet_model_name") or
-            metadata.get("s7comm_cpu_type") or metadata.get("pn_dcp_station_name") or
-            metadata.get("http_server") or "Unknown")
-
 def get_conversations(pcap_path):
     conv = {}
     cmd = ["tshark", "-r", pcap_path, "-z", "conv,ip", "-q"]
@@ -497,95 +308,104 @@ def get_conversations(pcap_path):
         st.warning(f"Conversation error: {e}")
     return conv
 
-def generate_vis_network(nodes_data, edges_data):
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <title>CyberMesh Network Topology</title>
-        <script type="text/javascript" src="https://unpkg.com/vis-network@9.1.2/dist/vis-network.min.js"></script>
-        <style>
-            html, body, #network {{
-                margin: 0;
-                padding: 0;
-                width: 100%;
-                height: 100%;
-                background-color: #0b0f1c;
-            }}
-            .controls {{
-                position: absolute;
-                bottom: 20px;
-                right: 20px;
-                background: rgba(0,0,0,0.8);
-                padding: 8px 15px;
-                border-radius: 8px;
-                color: #2dd4bf;
-                font-size: 12px;
-                font-family: monospace;
-                z-index: 100;
-                backdrop-filter: blur(5px);
-                border-left: 3px solid #2dd4bf;
-            }}
-        </style>
-    </head>
-    <body>
-        <div id="network"></div>
-        <div class="controls">
-            🖱️ Drag nodes | 🔍 Scroll zoom | ⬜ Double‑click fullscreen | 🎨 OT=#e74c3c, IT=#3498db, Unknown=#95a5a6
-        </div>
-        <script>
-            var nodes = new vis.DataSet({json.dumps(nodes_data)});
-            var edges = new vis.DataSet({json.dumps(edges_data)});
-            var container = document.getElementById('network');
-            var data = {{nodes: nodes, edges: edges}};
-            var options = {{
-                nodes: {{
-                    font: {{color: 'white', size: 14, face: 'Arial'}},
-                    borderWidth: 2,
-                    shadow: {{enabled: true, color: 'rgba(0,0,0,0.5)'}},
-                    shape: 'dot',
-                    size: 25
-                }},
-                edges: {{
-                    smooth: {{type: 'continuous', roundness: 0.5}},
-                    color: {{color: '#2dd4bf', highlight: '#ffffff'}},
-                    width: 2,
-                    arrows: {{to: {{enabled: false}}}}
-                }},
-                physics: {{
-                    enabled: true,
-                    solver: 'hierarchicalRepulsion',
-                    hierarchicalRepulsion: {{nodeDistance: 180, centralGravity: 0.3, springLength: 200}},
-                    stabilization: {{iterations: 300, fit: true}}
-                }},
-                layout: {{
-                    hierarchical: {{
-                        enabled: true,
-                        levelSeparation: 180,
-                        nodeSpacing: 150,
-                        direction: 'UD',
-                        sortMethod: 'directed'
-                    }}
-                }},
-                interaction: {{
-                    dragNodes: true,
-                    dragView: true,
-                    zoomView: true,
-                    hover: true,
-                    tooltipDelay: 100
-                }}
-            }};
-            var network = new vis.Network(container, data, options);
-            network.on('doubleClick', function() {{
-                if (document.fullscreenElement) document.exitFullscreen();
-                else document.documentElement.requestFullscreen();
-            }});
-        </script>
-    </body>
-    </html>
-    """
-    return html
+# =============================================================================
+# PLOTLY NETWORK GRAPH
+# =============================================================================
+def create_plotly_network(G, ip_data, ip_to_mac, ip_to_category):
+    pos = nx.spring_layout(G, k=2, iterations=50, seed=42)
+    node_x, node_y, node_text, node_color, node_size = [], [], [], [], []
+    for node in G.nodes():
+        x, y = pos[node]
+        node_x.append(x)
+        node_y.append(y)
+        category = ip_to_category.get(node, "Unknown")
+        if category == "OT":
+            color = "#e74c3c"  # red
+        elif category == "IT":
+            color = "#3498db"  # blue
+        else:
+            color = "#95a5a6"  # grey
+        node_color.append(color)
+        asset_info = ip_data.get(node, {})
+        protocols = ", ".join(asset_info.get("protocols", []))
+        mac = ip_to_mac.get(node, "Unknown")
+        vendor = get_vendor_from_mac(mac)
+        hover_text = (
+            f"<b>{node}</b><br>"
+            f"Category: {category}<br>"
+            f"Protocols: {protocols}<br>"
+            f"MAC: {mac}<br>"
+            f"Vendor: {vendor}<br>"
+            f"Packets: {asset_info.get('packet_count', 0)}"
+        )
+        node_text.append(hover_text)
+        node_size.append(20)
+    node_trace = go.Scatter(
+        x=node_x, y=node_y,
+        mode='markers+text',
+        marker=dict(size=node_size, color=node_color, line=dict(width=2, color='white')),
+        text=[node for node in G.nodes()],
+        textposition="bottom center",
+        textfont=dict(size=10, color='white'),
+        hovertext=node_text,
+        hoverinfo='text'
+    )
+    edge_traces = []
+    for edge in G.edges(data=True):
+        src, dst, data = edge
+        weight = data.get('weight', 1)
+        width = 1 + min(8, weight / 100)
+        x0, y0 = pos[src]
+        x1, y1 = pos[dst]
+        edge_trace = go.Scatter(
+            x=[x0, x1, None], y=[y0, y1, None],
+            mode='lines',
+            line=dict(width=width, color='#888888'),
+            hoverinfo='none'
+        )
+        edge_traces.append(edge_trace)
+    fig = go.Figure(data=edge_traces + [node_trace])
+    fig.update_layout(
+        title="OT/IT Network Topology",
+        title_font=dict(color='white'),
+        showlegend=False,
+        hovermode='closest',
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        plot_bgcolor='#0f0f0f',
+        paper_bgcolor='#0f0f0f',
+        font=dict(color='white'),
+        height=700
+    )
+    return fig
+
+# =============================================================================
+# FOLIUM MAP (placeholder; can be extended with geoIP)
+# =============================================================================
+def create_folium_map(assets_df):
+    # Check if we have lat/lon columns
+    if 'lat' not in assets_df.columns or 'lon' not in assets_df.columns:
+        return None
+    map_df = assets_df.dropna(subset=['lat', 'lon'])
+    if map_df.empty:
+        return None
+    center_lat = map_df.iloc[0]['lat']
+    center_lon = map_df.iloc[0]['lon']
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles='CartoDB dark_matter')
+    marker_cluster = MarkerCluster().add_to(m)
+    for _, row in map_df.iterrows():
+        popup_text = f"""
+        <b>{row['ip_address']}</b><br>
+        Type: {row['asset_type']}<br>
+        Vendor: {row['vendor']}<br>
+        Protocols: {row['protocols']}
+        """
+        folium.Marker(
+            location=[row['lat'], row['lon']],
+            popup=popup_text,
+            icon=folium.Icon(color='green' if row['category'] == 'OT' else 'blue')
+        ).add_to(marker_cluster)
+    return m
 
 # =============================================================================
 # MAIN APP
@@ -623,70 +443,85 @@ tshark -r your.pcap -T fields -e tcp.port | sort | uniq -c | sort -rn
     ip_data = extract_assets(pcap_path, custom_ports)
     ip_to_mac = extract_macs(pcap_path)
 
+    # Build asset list
     assets = []
+    ip_to_category = {}
     for ip, data in ip_data.items():
         mac = ip_to_mac.get(ip, "Unknown")
-        vendor = get_vendor(data["metadata"], mac)
-        model = get_model(data["metadata"])
+        vendor_mac = get_vendor_from_mac(mac)
+        vendor = vendor_mac if vendor_mac != "Unknown" else "Unknown"
+        if vendor == "Unknown" and "cip_vendor_id" in data["metadata"]:
+            vendor_ids = {"002a": "Siemens", "001b": "Rockwell", "005a": "Schneider"}
+            vendor = vendor_ids.get(data["metadata"]["cip_vendor_id"], "Unknown")
+        category = ", ".join(data["category"]) if data["category"] else "Unknown"
+        ip_to_category[ip] = "OT" if "OT" in data["category"] else ("IT" if "IT" in data["category"] else "Unknown")
         asset = {
-            "IP Address": ip,
-            "MAC Address": mac,
-            "Vendor": vendor,
-            "Model": model,
-            "Asset Type": next(iter(data["protocols"])) if data["protocols"] else "Unknown",
-            "Category": ", ".join(data["category"]) if data["category"] else "Unknown",
-            "Hostname": data["metadata"].get("dhcp_option_hostname") or data["metadata"].get("dns_qry_name") or "",
-            "OS / Service": data["metadata"].get("sysDescr", "")[:60] or data["metadata"].get("http_server", "")[:60],
-            "Protocols": ", ".join(data["protocols"]),
-            "Packet Count": data["packet_count"]
+            "ip_address": ip,
+            "mac_address": mac,
+            "vendor": vendor,
+            "asset_type": next(iter(data["protocols"])) if data["protocols"] else "Unknown",
+            "category": category,
+            "hostname": data["metadata"].get("dhcp_option_hostname") or data["metadata"].get("dns_qry_name") or "",
+            "os_service": data["metadata"].get("sysDescr", "")[:60] or data["metadata"].get("http_server", "")[:60],
+            "protocols": ", ".join(data["protocols"]),
+            "packet_count": data["packet_count"],
+            # Placeholder for location (you can add geoIP lookup here)
+            "lat": None,
+            "lon": None
         }
         assets.append(asset)
 
     conversations = get_conversations(pcap_path)
     G = nx.Graph()
     for a in assets:
-        G.add_node(a["IP Address"])
-    ip_set = {a["IP Address"] for a in assets}
+        G.add_node(a["ip_address"])
+    ip_set = {a["ip_address"] for a in assets}
     for (src, dst), cnt in conversations.items():
         if src in ip_set and dst in ip_set:
             G.add_edge(src, dst, weight=cnt)
 
-    nodes_vis = []
-    for ip, data in ip_data.items():
-        category = "OT" if "OT" in data["category"] else ("IT" if "IT" in data["category"] else "Unknown")
-        color = "#e74c3c" if category == "OT" else ("#3498db" if category == "IT" else "#95a5a6")
-        mac = ip_to_mac.get(ip, "Unknown")
-        vendor = get_vendor(data["metadata"], mac)
-        title = f"<b>{ip}</b><br>Type: {', '.join(data['protocols'])}<br>MAC: {mac}<br>Vendor: {vendor}"
-        nodes_vis.append({"id": ip, "label": ip, "title": title, "color": color, "category": category})
-    edges_vis = []
-    for (src, dst), cnt in conversations.items():
-        if src in ip_set and dst in ip_set:
-            edges_vis.append({"from": src, "to": dst, "value": cnt, "title": f"Packets: {cnt}"})
-
-    tab1, tab2 = st.tabs(["📋 Asset Inventory", "🗺️ Network Topology"])
+    # Tabs
+    tab1, tab2, tab3 = st.tabs(["📋 Asset Inventory", "🗺️ Network Topology", "📍 Map View"])
 
     with tab1:
         if assets:
             df = pd.DataFrame(assets)
-            st.dataframe(df, use_container_width=True)
+            display_cols = ["ip_address", "mac_address", "vendor", "asset_type", "category",
+                            "hostname", "os_service", "protocols", "packet_count"]
+            df_display = df[display_cols].copy()
+            st.dataframe(df_display, use_container_width=True)
             csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button("⬇️ Download Asset Inventory (CSV)", csv, "ot_it_assets.csv", "text/csv")
+            st.download_button("⬇️ Download Asset Inventory (CSV)", csv, "cybershield_assets.csv", "text/csv")
             col1, col2, col3 = st.columns(3)
             col1.metric("Total Assets", len(assets))
-            col2.metric("OT Assets", sum(1 for a in assets if "OT" in a["Category"]))
-            col3.metric("IT Assets", sum(1 for a in assets if "IT" in a["Category"]))
+            col2.metric("OT Assets", sum(1 for a in assets if "OT" in a["category"]))
+            col3.metric("IT Assets", sum(1 for a in assets if "IT" in a["category"]))
         else:
             st.error("No assets detected. Try adding custom decode-as ports or check your PCAP.")
 
     with tab2:
-        if nodes_vis and edges_vis:
-            st.success(f"✅ Visualizing {len(nodes_vis)} assets and {len(edges_vis)} communication links")
-            html_graph = generate_vis_network(nodes_vis, edges_vis)
-            st.components.v1.html(html_graph, height=700, scrolling=False)
-            st.caption("💡 Tip: Drag nodes to reorganise | Scroll to zoom | Double‑click for full‑screen")
+        if G.number_of_nodes() > 0:
+            fig = create_plotly_network(G, ip_data, ip_to_mac, ip_to_category)
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("💡 Tip: Hover over nodes for details | Drag to zoom | Scroll to pan")
         else:
-            st.info("Not enough data to build a network map.")
+            st.info("Not enough data to build a network graph.")
+
+    with tab3:
+        # Build DataFrame for map
+        map_df = pd.DataFrame(assets)
+        map_obj = create_folium_map(map_df)
+        if map_obj:
+            st.components.v1.html(map_obj._repr_html_(), height=600)
+            st.caption("📍 Asset locations (if coordinates are available)")
+        else:
+            st.info("Map view requires latitude/longitude data. You can add geoIP lookup to populate coordinates.")
+            st.markdown("""
+            **To add geolocation**:  
+            - Install `maxminddb` or use a free geoIP service  
+            - Add `lat` and `lon` columns to the asset data  
+            - The map will automatically show markers for assets with coordinates
+            """)
 
     os.unlink(pcap_path)
 
